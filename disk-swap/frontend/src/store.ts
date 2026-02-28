@@ -89,8 +89,8 @@ function buildStages(
     },
     ...(sandboxEnabled ? [{
       name: "sandbox" as const,
-      label: "Boot HA from Disk",
-      description: "Starts Home Assistant directly from your new disk — restore your backup in the real HA interface before first boot.",
+      label: "Live Boot",
+      description: "Boots your new HA OS in parallel — verify your backup restored correctly before you swap the disk.",
       status: "pending" as const,
       progress: 0,
       experimental: true,

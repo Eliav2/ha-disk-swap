@@ -75,10 +75,12 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
       {isSandboxReady && (
         <Card>
           <CardHeader>
-            <CardTitle>HA is running — restore your backup</CardTitle>
+            <CardTitle>Your new HA OS is running in parallel</CardTitle>
             <CardDescription>
-              A live Home Assistant instance is running inside the add-on.
-              Complete onboarding and restore your backup below, then click Done.
+              A live Home Assistant instance booted from your new disk is running inside the add-on.
+              Complete onboarding, restore your backup, and verify everything looks correct.
+              This is an isolated environment — it cannot control your devices or affect your running HA.
+              Click Done when you're satisfied, then swap the disk.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
@@ -86,14 +88,14 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
               src={`http://${window.location.hostname}:8124/`}
               className="w-full rounded-md border"
               style={{ height: "600px" }}
-              title="Home Assistant"
+              title="Home Assistant (new disk)"
             />
             <Button
               className="w-full"
               disabled={sandboxDone}
               onClick={handleSandboxDone}
             >
-              {sandboxDone ? "Shutting down sandbox…" : "Done — Restore Complete"}
+              {sandboxDone ? "Shutting down…" : "Done — Ready to Swap Disk"}
             </Button>
           </CardContent>
         </Card>

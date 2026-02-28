@@ -222,7 +222,7 @@ export function BackupSelect({ device, selectedBackup, skipFlash, sandboxEnabled
         </div>
       )}
 
-      {/* Boot HA Sandbox (Experimental) */}
+      {/* Live Boot (Experimental) */}
       <div className="space-y-2">
         <h2 className="text-sm font-medium">Live Boot</h2>
         <Card size="sm">
@@ -232,15 +232,15 @@ export function BackupSelect({ device, selectedBackup, skipFlash, sandboxEnabled
                 <Rocket className="text-muted-foreground h-4 w-4" />
                 <div>
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium">Boot HA from Disk</span>
+                    <span className="text-sm font-medium">Boot new HA OS in parallel</span>
                     <Badge variant="outline" className="border-amber-400 text-amber-600 text-[10px] px-1.5 py-0">
                       Experimental
                     </Badge>
                   </div>
                   <p className="text-muted-foreground text-xs">
                     {sandboxEnabled
-                      ? "Will boot HA directly from your new disk and open the UI for backup restore."
-                      : "Starts HA from your new disk so you can restore your backup in the real HA UI. Takes 5–15 min."}
+                      ? "After cloning, your new HA OS boots inside the add-on so you can verify the backup restored correctly — before you swap the disk. The inner HA is fully isolated and cannot control your devices."
+                      : "After cloning, boot the new HA OS in parallel and verify your backup before swapping. Takes 5–15 min extra."}
                   </p>
                 </div>
               </div>
