@@ -30,10 +30,14 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
     (s) => s.status === "completed" || s.status === "failed",
   );
 
-  // Sandbox is "ready" when the stage is in_progress with description "sandbox_ready"
   const sandboxStage = stages.find((s) => s.name === "sandbox");
-  const isSandboxReady =
-    sandboxStage?.status === "in_progress" && sandboxStage?.description === "sandbox_ready";
+  const sandboxDesc = sandboxStage?.status === "in_progress" ? (sandboxStage.description ?? "") : "";
+  // Show the sandbox panel once the iframe is ready (restoring, done, or failed)
+  const isSandboxVisible = sandboxStage?.status === "in_progress" &&
+    (sandboxDesc === "sandbox_ready" || sandboxDesc === "sandbox_restoring" || sandboxDesc === "sandbox_restore_failed" || (sandboxStage?.progress ?? 0) >= 85);
+  const isSandboxRestoreFailed = sandboxDesc === "sandbox_restore_failed";
+  const isSandboxReady = sandboxDesc === "sandbox_ready" || isSandboxRestoreFailed;
+  const isSandboxRestoring = isSandboxVisible && !isSandboxReady;
 
   async function handleCancel() {
     setCancelling(true);
@@ -72,31 +76,50 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
         </CardContent>
       </Card>
 
-      {isSandboxReady && (
+      {isSandboxVisible && (
         <Card>
           <CardHeader>
             <CardTitle>Your new HA OS is running in parallel</CardTitle>
             <CardDescription>
-              A live Home Assistant instance booted from your new disk is running inside the add-on.
-              Complete onboarding, restore your backup, and verify everything looks correct.
-              This is an isolated environment — it cannot control your devices or affect your running HA.
-              Click Done when you're satisfied, then swap the disk.
+              {isSandboxRestoring
+                ? "Your backup is being restored automatically. The instance will restart momentarily."
+                : "Verify everything looks correct, then click Done to proceed with the disk swap. This instance is fully isolated — it cannot control your devices."}
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
-            <iframe
-              src={`http://${window.location.hostname}:8124/`}
-              className="w-full rounded-md border"
-              style={{ height: "600px" }}
-              title="Home Assistant (new disk)"
-            />
-            <Button
-              className="w-full"
-              disabled={sandboxDone}
-              onClick={handleSandboxDone}
-            >
-              {sandboxDone ? "Shutting down…" : "Done — Ready to Swap Disk"}
-            </Button>
+            <div className="relative w-full rounded-md overflow-hidden border" style={{ height: "600px" }}>
+              <iframe
+                src={`http://${window.location.hostname}:8124/`}
+                className="w-full h-full"
+                title="Home Assistant (new disk)"
+              />
+              {isSandboxRestoring && (
+                <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3">
+                  <div className="h-8 w-8 rounded-full border-4 border-primary border-t-transparent animate-spin" />
+                  <p className="text-sm font-medium">{sandboxStage?.description && sandboxStage.description !== "sandbox_restoring" ? sandboxStage.description : "Restoring your backup…"}</p>
+                </div>
+              )}
+            </div>
+            {isSandboxRestoreFailed && (
+              <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive space-y-1">
+                <p className="font-medium">Auto-restore failed — please restore manually:</p>
+                <ol className="list-decimal list-inside space-y-0.5 text-destructive/90">
+                  <li>Complete onboarding in the panel above</li>
+                  <li>Go to <strong>Settings → System → Backups</strong></li>
+                  <li>Select your backup and click <strong>Restore</strong></li>
+                  <li>Once restored, click the button below</li>
+                </ol>
+              </div>
+            )}
+            {isSandboxReady && (
+              <Button
+                className="w-full"
+                disabled={sandboxDone}
+                onClick={handleSandboxDone}
+              >
+                {sandboxDone ? "Shutting down…" : "Done — Ready to Swap Disk"}
+              </Button>
+            )}
           </CardContent>
         </Card>
       )}

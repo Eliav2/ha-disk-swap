@@ -230,6 +230,7 @@ const SANDBOX_PROXY_PORT = 8124;
 
 Bun.serve({
   port: SANDBOX_PROXY_PORT,
+  idleTimeout: 0,
   async fetch(req) {
     const proxyBase = getSandboxProxyUrl();
     if (!proxyBase) {

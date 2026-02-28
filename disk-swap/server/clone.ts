@@ -195,7 +195,7 @@ async function runSandboxStage_pipeline(devicePath: string): Promise<void> {
   }
 
   try {
-    await runSandboxStage(devicePath, machineName, (percent, description) => {
+    await runSandboxStage(devicePath, machineName, backupSlug, (percent, description) => {
       updateStage("sandbox", "in_progress", percent, undefined, undefined, description);
     }, abortController!.signal);
     updateStage("sandbox", "completed", 100);
