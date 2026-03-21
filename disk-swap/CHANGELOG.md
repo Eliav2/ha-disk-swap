@@ -1,3 +1,33 @@
+## 1.2.0
+
+### Live Boot (new)
+
+- **Sandbox stage**: boot your new HA OS in parallel inside a Docker-in-Docker environment to verify your backup restored correctly before swapping the disk
+- Automatic backup restore via the onboarding API — no manual steps needed
+- Sandbox proxy on port 8124 for isolated browser access to the inner HA instance
+- Enabled by default (can be toggled off in the backup selection screen)
+- Non-fatal: if sandbox fails, the disk is still fully usable for normal first-boot restore
+
+### Improvements
+
+- **Backup progress tracking**: estimate progress from backup file size growth instead of the Supervisor's 0→100 jump
+- **Code quality**: consolidate duplicated types between frontend and server via shared `@shared/` alias, extract shared `formatBytes` utility, deduplicate backup name lookup, clean up redundant error handling
+- **Inject stage**: always format data partition with fresh ext4 to prevent stale state from previous runs
+- **Sandbox proxy**: add try-catch to prevent connection resets, explicit `0.0.0.0` bind
+- **Sandbox auto-restore**: retry on non-JSON responses (HTML error pages), fail fast on 401
+- **Supervisor API**: add 30s timeout to all calls to prevent indefinite hangs
+- **Frontend**: connectivity probe before showing sandbox iframe, "See detailed logs" link in progress card
+- **Injector**: cancel reader stream on abort to prevent memory leak
+- **Job persistence**: log errors instead of silently swallowing write failures
+- **Job resume**: persist `skipFlash` and `sandboxEnabled` so resumed jobs show correct stage labels
+- **Security**: add `sandbox` attribute to inner HA iframe
+
+### Bug fixes
+
+- Fix `SupervisorBackup` type missing `size_bytes` field
+- Fix `StartCloneRequest` type missing `skip_sandbox` field
+- Fix `ImageCacheStatus` shared type having required fields that are optional when not cached
+
 ## 1.0.1
 
 - Fix inject: drop kernel page cache after mkfs to prevent stale reads on freshly flashed devices
