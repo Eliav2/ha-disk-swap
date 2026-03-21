@@ -67,13 +67,10 @@ async function createExt4(): Promise<void> {
 
 async function mount(): Promise<void> {
   await $`mkdir -p ${MOUNT_POINT}`;
-  try {
-    await $`mount -t ext4 -o rw ${LOOP_DEV} ${MOUNT_POINT}`;
-  } catch {
-    console.log("[inject] Mount failed, recreating ext4...");
-    await createExt4();
-    await $`mount -t ext4 -o rw ${LOOP_DEV} ${MOUNT_POINT}`;
-  }
+  // Always create a fresh ext4 — ensures no leftover state from previous runs
+  // (e.g. sandbox auth tokens, docker images) when skipFlash is used.
+  await createExt4();
+  await $`mount -t ext4 -o rw ${LOOP_DEV} ${MOUNT_POINT}`;
 }
 
 async function unmount(): Promise<void> {

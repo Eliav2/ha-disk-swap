@@ -28,7 +28,7 @@ export const appStore = new Store<AppState>({
   selectedBackup: null,
   backupName: null,
   skipFlash: false,
-  sandboxEnabled: false,
+  sandboxEnabled: true,
   stages: defaultStages,
   isJobDone: false,
   isCheckingJob: true,

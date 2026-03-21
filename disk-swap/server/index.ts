@@ -229,14 +229,14 @@ app.post("/api/sandbox-done", (c) => {
 // proxies straight to the inner HA — the right scripts, the right auth state.
 const SANDBOX_PROXY_PORT = 8124;
 
-Bun.serve({
-  port: SANDBOX_PROXY_PORT,
-  idleTimeout: 0,
-  async fetch(req) {
-    const proxyBase = getSandboxProxyUrl();
-    if (!proxyBase) {
-      return new Response("Sandbox not ready\n", { status: 503, headers: { "content-type": "text/plain" } });
-    }
+/** Proxy a request to the inner HA Core. Shared by the port-8124 server and the ingress fallback route. */
+async function proxySandboxRequest(req: Request): Promise<Response> {
+  const proxyBase = getSandboxProxyUrl();
+  if (!proxyBase) {
+    return new Response("Sandbox not ready\n", { status: 503, headers: { "content-type": "text/plain" } });
+  }
+
+  try {
     const url = new URL(req.url);
     const target = `${proxyBase}${url.pathname}${url.search}`;
 
@@ -259,7 +259,20 @@ Bun.serve({
     headers.delete("content-encoding");
 
     return new Response(res.body, { status: res.status, headers });
-  },
+  } catch (err) {
+    console.error("[sandbox-proxy] Proxy error:", err);
+    return new Response("Sandbox proxy error — inner HA may not be ready yet\n", {
+      status: 502,
+      headers: { "content-type": "text/plain" },
+    });
+  }
+}
+
+Bun.serve({
+  port: SANDBOX_PROXY_PORT,
+  hostname: "0.0.0.0",
+  idleTimeout: 0,
+  fetch: proxySandboxRequest,
 });
 
 console.log(`Sandbox proxy listening on port ${SANDBOX_PROXY_PORT}`);

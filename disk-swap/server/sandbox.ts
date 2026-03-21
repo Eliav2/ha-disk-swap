@@ -164,9 +164,36 @@ async function autoRestoreBackup(
 
   // Verify the user step hasn't been completed yet — if it has, the onboarding
   // restore endpoint will return 401 and we should bail out early.
-  const onboarding = (await fetch(`${coreUrl}/api/onboarding`, {
-    signal: AbortSignal.timeout(5_000),
-  }).then((r) => r.json())) as Array<{ step: string; done: boolean }>;
+  // The response may be HTML (e.g. networking error page) instead of JSON — retry.
+  let onboarding: Array<{ step: string; done: boolean }> | null = null;
+  for (let i = 0; i < 10; i++) {
+    try {
+      const res = await fetch(`${coreUrl}/api/onboarding`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (res.status === 401) {
+        // 401 = HA Core already has auth (not in onboarding mode).
+        // Likely leftover state from a previous sandbox run on the same disk.
+        throw new Error("Onboarding already completed (401) — skipping auto-restore");
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const ct = res.headers.get("content-type") ?? "";
+      if (!ct.includes("json")) {
+        // HTML response (e.g. networking error page) — transient, retry
+        console.log(`[sandbox] Onboarding returned non-JSON (attempt ${i + 1}/10), retrying…`);
+        await new Promise((r) => setTimeout(r, 5_000));
+        continue;
+      }
+      onboarding = await res.json();
+      break;
+    } catch (err) {
+      // Re-throw terminal errors (401, user done) — don't retry
+      if (err instanceof Error && (err.message.includes("401") || err.message.includes("already"))) throw err;
+      console.log(`[sandbox] Onboarding check failed (attempt ${i + 1}/10): ${err}`);
+      await new Promise((r) => setTimeout(r, 5_000));
+    }
+  }
+  if (!onboarding) throw new Error("Could not reach onboarding API after retries");
   const userDone = onboarding.find((s) => s.step === "user")?.done ?? false;
   if (userDone) throw new Error("Onboarding user step already done");
 

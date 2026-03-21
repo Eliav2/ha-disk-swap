@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useStore } from "@tanstack/react-store";
 import type { Device, StageState } from "@/types";
+import { ExternalLink } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StageRow } from "@/components/StageRow";
@@ -16,6 +17,8 @@ interface CloneProgressProps {
 export function CloneProgress({ device, stages }: CloneProgressProps) {
   const [cancelling, setCancelling] = useState(false);
   const [sandboxDone, setSandboxDone] = useState(false);
+  const [sandboxReachable, setSandboxReachable] = useState(false);
+  const probeRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isJobDone = useStore(appStore, (s) => s.isJobDone);
   const backupName = useStore(appStore, (s) => s.backupName);
   const { data: systemInfo } = useSystemInfo();
@@ -38,6 +41,23 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
   const isSandboxRestoreFailed = sandboxDesc === "sandbox_restore_failed";
   const isSandboxReady = sandboxDesc === "sandbox_ready" || isSandboxRestoreFailed;
   const isSandboxRestoring = isSandboxVisible && !isSandboxReady;
+
+  const sandboxUrl = `http://${window.location.hostname}:8124/`;
+
+  // Probe port 8124 until reachable, then stop polling
+  useEffect(() => {
+    if (!isSandboxVisible || sandboxReachable) return;
+    let stopped = false;
+    const probe = async () => {
+      try {
+        await fetch(sandboxUrl, { mode: "no-cors", signal: AbortSignal.timeout(3000) });
+        if (!stopped) setSandboxReachable(true);
+      } catch { /* not ready yet */ }
+    };
+    probe();
+    probeRef.current = setInterval(probe, 3000);
+    return () => { stopped = true; clearInterval(probeRef.current!); };
+  }, [isSandboxVisible, sandboxReachable]);
 
   async function handleCancel() {
     setCancelling(true);
@@ -66,7 +86,20 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
 
       <Card>
         <CardHeader>
-          <CardTitle>Progress</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle>Progress</CardTitle>
+            {logsUrl && (
+              <a
+                href={logsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+              >
+                See detailed logs
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            )}
+          </div>
           <CardDescription>{device.path}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -88,13 +121,20 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             <div className="relative w-full rounded-md overflow-hidden border" style={{ height: "600px" }}>
-              <iframe
-                src={`http://${window.location.hostname}:8124/`}
-                className="w-full h-full"
-                title="Home Assistant (new disk)"
-                sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
-              />
-              {isSandboxRestoring && (
+              {sandboxReachable ? (
+                <iframe
+                  src={sandboxUrl}
+                  className="w-full h-full"
+                  title="Home Assistant (new disk)"
+                  sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+                />
+              ) : (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-muted">
+                  <div className="h-8 w-8 rounded-full border-4 border-primary border-t-transparent animate-spin" />
+                  <p className="text-sm text-muted-foreground">Connecting to sandbox instance…</p>
+                </div>
+              )}
+              {isSandboxRestoring && sandboxReachable && (
                 <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3">
                   <div className="h-8 w-8 rounded-full border-4 border-primary border-t-transparent animate-spin" />
                   <p className="text-sm font-medium">{sandboxStage?.description && sandboxStage.description !== "sandbox_restoring" ? sandboxStage.description : "Restoring your backup…"}</p>
