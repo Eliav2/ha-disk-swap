@@ -111,6 +111,15 @@ export async function listBackups(): Promise<SupervisorBackup[]> {
   return data.backups;
 }
 
+/** Get the size of the most recent full backup in bytes (for progress estimation). */
+export async function getLastFullBackupSize(): Promise<number | null> {
+  const backups = await listBackups();
+  const fullBackups = backups
+    .filter((b) => b.type === "full" && b.size_bytes > 0)
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  return fullBackups.length > 0 ? fullBackups[0].size_bytes : null;
+}
+
 /** Create a full backup in background mode. Returns the job_id for polling. */
 export async function createFullBackup(): Promise<BackupJobResponse> {
   const name = `disk-swap-clone-${new Date().toISOString().slice(0, 10)}`;

@@ -15,6 +15,7 @@ import {
   getOsInfo,
   getInfo,
   machineToBoardSlug,
+  getLastFullBackupSize,
 } from "./supervisor.ts";
 import {
   buildDownloadUrl,
@@ -230,6 +231,18 @@ async function runBackupStage(): Promise<void> {
   }
 
   try {
+    // Snapshot existing files in /backup/ so we can detect the new one
+    const existingFiles = new Set<string>();
+    try {
+      for (const entry of new Bun.Glob("*.tar").scanSync("/backup")) {
+        existingFiles.add(entry);
+      }
+    } catch { /* /backup/ may not exist yet */ }
+
+    // Get expected size from the most recent full backup
+    const expectedSize = await getLastFullBackupSize();
+    console.log("[backup] Expected size:", expectedSize);
+
     console.log("[backup] Creating full backup via Supervisor API...");
     const { job_id } = await createFullBackup();
     console.log("[backup] Backup job created:", job_id);
@@ -238,13 +251,30 @@ async function runBackupStage(): Promise<void> {
       checkCancelled();
       await new Promise((r) => setTimeout(r, 2000));
       const status = await pollJob(job_id);
-      console.log("[backup] Poll:", JSON.stringify(status));
 
       if (status.errors?.length > 0) {
         throw new Error(`Backup failed: ${status.errors.join(", ")}`);
       }
 
-      updateStage("backup", "in_progress", Math.round(status.progress));
+      // Track progress via file size growth
+      let progress = Math.round(status.progress);
+      if (expectedSize && expectedSize > 0) {
+        try {
+          let newFileSize = 0;
+          for (const entry of new Bun.Glob("*.tar").scanSync("/backup")) {
+            if (!existingFiles.has(entry)) {
+              const stat = Bun.file(`/backup/${entry}`);
+              newFileSize = Math.max(newFileSize, stat.size);
+            }
+          }
+          if (newFileSize > 0) {
+            progress = Math.min(Math.round((newFileSize / expectedSize) * 100), 99);
+          }
+        } catch { /* ignore stat errors */ }
+      }
+
+      console.log("[backup] Poll: done=%s progress=%d fileProgress=%d", status.done, status.progress, progress);
+      updateStage("backup", "in_progress", progress);
 
       if (status.done) {
         backupSlug = status.reference || "";
