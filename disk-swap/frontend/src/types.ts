@@ -1,36 +1,19 @@
-/** Filtered, safe USB device returned by GET api/devices */
-export interface Device {
-  name: string;
-  path: string;
-  size: number;
-  size_human: string;
-  vendor: string;
-  model: string;
-  tran: string;
-  serial: string;
-  has_ha_os: boolean;
-}
+// Re-export shared types used by both frontend and server
+export type {
+  Device,
+  DevicesResponse,
+  SystemInfoResponse,
+  StageName,
+  StageStatus,
+  WsMessage,
+  JobStatus,
+  ImageCacheStatus,
+} from "@shared/types.ts";
 
-/** Response shape for GET api/devices */
-export interface DevicesResponse {
-  devices: Device[];
-}
+// Import for local use
+import type { StageName, StageStatus, Job as SharedJob } from "@shared/types.ts";
 
-/** Response shape for GET api/system-info */
-export interface SystemInfoResponse {
-  machine: string;
-  board_slug: string;
-  os_version: string;
-  os_version_latest: string;
-  ip_address: string;
-  free_space_bytes: number;
-  free_space_human: string;
-  protected: boolean;
-  addon_slug: string;
-  addon_version: string;
-}
-
-/** HA backup entry from GET api/backups */
+/** HA backup entry from GET api/backups (frontend subset — no size_bytes) */
 export interface Backup {
   slug: string;
   name: string;
@@ -49,20 +32,7 @@ export type BackupSelection =
   | { type: "new" }
   | { type: "existing"; slug: string; name: string };
 
-/** Response shape for GET api/image-cache */
-export interface ImageCacheStatus {
-  cached: boolean;
-  version?: string;
-  board?: string;
-  size_bytes?: number;
-  size_human?: string;
-}
-
-/** Clone job stages */
-export type StageName = "backup" | "download" | "flash" | "inject" | "sandbox";
-
-export type StageStatus = "pending" | "in_progress" | "completed" | "failed";
-
+/** Frontend stage state — extends shared StageState with UI-specific fields */
 export interface StageState {
   name: StageName;
   label: string;
@@ -75,26 +45,8 @@ export interface StageState {
   experimental?: boolean;
 }
 
-/** WebSocket messages (server → client) */
-export type WsMessage =
-  | { type: "stage_update"; stage: StageName; status: StageStatus; progress: number; speed?: number; eta?: number; description?: string }
-  | { type: "error"; stage: StageName; message: string }
-  | { type: "done"; backupName: string | null }
-  | { type: "cancelled" };
-
-/** Job status */
-export type JobStatus = "in_progress" | "completed" | "failed";
-
-/** Clone job returned by GET api/jobs/current */
-export interface Job {
-  id: string;
-  status: JobStatus;
-  device: Device;
-  stages: Record<StageName, { name: StageName; status: StageStatus; progress: number; description?: string }>;
-  error: string | null;
-  backupName: string | null;
-  createdAt: number;
-}
+/** Clone job returned by GET api/jobs/current (matches shared Job) */
+export type Job = SharedJob;
 
 /** App screens */
 export type Screen = "device_select" | "backup_select" | "confirm" | "progress" | "complete";

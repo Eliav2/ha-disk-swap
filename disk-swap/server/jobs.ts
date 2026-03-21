@@ -29,7 +29,9 @@ const subscribers = new Set<(msg: WsMessage) => void>();
 
 function persist(): void {
   if (currentJob) {
-    Bun.write(JOB_FILE, JSON.stringify(currentJob)).catch(() => {});
+    Bun.write(JOB_FILE, JSON.stringify(currentJob)).catch((err) => {
+      console.error("[jobs] Failed to persist job:", err);
+    });
   }
 }
 
@@ -46,7 +48,7 @@ export function isLocked(): boolean {
 }
 
 /** Create a new clone job. Throws if a job is already in progress. */
-export function createJob(device: Device): Job {
+export function createJob(device: Device, skipFlash?: boolean, sandboxEnabled?: boolean): Job {
   if (isLocked()) {
     throw new Error("A clone operation is already in progress.");
   }
@@ -65,6 +67,8 @@ export function createJob(device: Device): Job {
     error: null,
     backupName: null,
     createdAt: Date.now(),
+    skipFlash,
+    sandboxEnabled,
   };
 
   persist();

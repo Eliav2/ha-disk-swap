@@ -7,8 +7,10 @@ import type {
   SupervisorJobStatus,
   SupervisorBackup,
 } from "../shared/types.ts";
+import { formatBytes } from "../shared/format.ts";
 
 const SUPERVISOR_URL = "http://supervisor";
+const API_TIMEOUT_MS = 30_000;
 
 /** Machine name → HAOS board slug lookup table */
 const MACHINE_TO_SLUG: Record<string, string> = {
@@ -55,6 +57,7 @@ function supervisorHeaders(): Record<string, string> {
 async function supervisorGet<T>(path: string): Promise<T> {
   const res = await fetch(`${SUPERVISOR_URL}${path}`, {
     headers: supervisorHeaders(),
+    signal: AbortSignal.timeout(API_TIMEOUT_MS),
   });
 
   if (!res.ok) {
@@ -83,6 +86,7 @@ async function supervisorPost<T>(path: string, body: unknown): Promise<T> {
     method: "POST",
     headers: supervisorHeaders(),
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(API_TIMEOUT_MS),
   });
 
   if (!res.ok) {
@@ -155,15 +159,6 @@ export async function getHostInfo(): Promise<HostInfo> {
 
 export async function getNetworkInfo(): Promise<NetworkInfo> {
   return supervisorGet<NetworkInfo>("/network/info");
-}
-
-function formatBytes(bytes: number): string {
-  const GB = 1024 ** 3;
-  const TB = 1024 ** 4;
-  if (bytes >= TB) return `${(bytes / TB).toFixed(1)} TB`;
-  if (bytes >= GB) return `${(bytes / GB).toFixed(1)} GB`;
-  const MB = 1024 ** 2;
-  return `${Math.round(bytes / MB)} MB`;
 }
 
 function extractIpAddress(network: NetworkInfo): string {

@@ -198,13 +198,10 @@ export const actions = {
 
   resumeJob(job: Job, systemInfo?: SystemInfoResponse | null) {
     const isCompleted = job.status === "completed";
-    // Always restore to progress screen — the isJobDone flag + "Next" button
-    // navigate to complete. Routing directly to "complete" on refresh was
-    // confusing because the user would see the done screen without context.
-    const screen: Screen = "progress";
+    const skipFlash = job.skipFlash ?? false;
+    const sandboxEnabled = job.sandboxEnabled ?? false;
 
-    // Always include sandbox in resumed jobs (so any sandbox progress is visible)
-    const base = buildStages({ type: "new" }, systemInfo, false, true);
+    const base = buildStages({ type: "new" }, systemInfo, skipFlash, sandboxEnabled);
     const stages: StageState[] = base.map((init) => {
       const jobStage = job.stages[init.name];
       return {
@@ -216,12 +213,12 @@ export const actions = {
     });
 
     appStore.setState(() => ({
-      screen,
+      screen: "progress" as const,
       selectedDevice: job.device,
       selectedBackup: null,
       backupName: job.backupName,
-      skipFlash: false,
-      sandboxEnabled: false,
+      skipFlash,
+      sandboxEnabled,
       stages,
       isJobDone: isCompleted,
       isCheckingJob: false,

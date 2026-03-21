@@ -37,6 +37,7 @@ export async function listBackups(): Promise<SupervisorBackup[]> {
       date: "2026-02-20T10:30:00+00:00",
       type: "full",
       size: 0.45,
+      size_bytes: 471859200,
     },
     {
       slug: "def67890",
@@ -44,6 +45,7 @@ export async function listBackups(): Promise<SupervisorBackup[]> {
       date: "2026-02-18T14:15:00+00:00",
       type: "full",
       size: 0.38,
+      size_bytes: 398458880,
     },
   ];
 }

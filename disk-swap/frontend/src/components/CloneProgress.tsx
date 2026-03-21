@@ -92,6 +92,7 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
                 src={`http://${window.location.hostname}:8124/`}
                 className="w-full h-full"
                 title="Home Assistant (new disk)"
+                sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
               />
               {isSandboxRestoring && (
                 <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3">

@@ -9,6 +9,7 @@ process.on("unhandledRejection", (err) => {
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { upgradeWebSocket, websocket } from "hono/bun";
+import type { StartCloneRequest } from "../shared/types.ts";
 import { getCurrentJob, dismissJob, subscribe } from "./jobs.ts";
 import { runClonePipeline, cancelClone } from "./clone.ts";
 import { getImageCacheInfo, discardCachedImage } from "./images.ts";
@@ -122,7 +123,7 @@ app.delete("/api/image-cache", async (c) => {
 
 app.post("/api/start-clone", async (c) => {
   try {
-    const body = await c.req.json<{ device: string; backup_slug?: string; skip_flash?: boolean; skip_sandbox?: boolean }>();
+    const body = await c.req.json<StartCloneRequest>();
     if (!body.device) {
       return c.json({ error: "Missing 'device' field" }, 400);
     }

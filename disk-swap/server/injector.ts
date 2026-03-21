@@ -162,6 +162,7 @@ export async function injectBackup(
 
     while (true) {
       if (signal?.aborted) {
+        reader.cancel();
         await writer.end();
         break;
       }

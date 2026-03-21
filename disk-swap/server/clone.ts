@@ -107,7 +107,7 @@ export async function runClonePipeline(
   skipSandbox?: boolean,
 ): Promise<Job> {
   const device = await preflight(devicePath);
-  const job = createJob(device);
+  const job = createJob(device, skipFlash, !skipSandbox);
 
   abortController = new AbortController();
 
@@ -119,18 +119,14 @@ export async function runClonePipeline(
         backupSlug = existingBackupSlug;
         console.log("[clone] Using existing backup:", backupSlug);
         updateStage("backup", "completed", 100);
-        // Look up backup name for frontend display
-        const backups = await listBackups();
-        const match = backups.find((b) => b.slug === backupSlug);
-        if (match) setBackupName(match.name);
       } else {
         console.log("[clone] Starting backup stage...");
         await runBackupStage();
-        // Look up backup name for frontend display
-        const backups = await listBackups();
-        const match = backups.find((b) => b.slug === backupSlug);
-        if (match) setBackupName(match.name);
       }
+      // Look up backup name for frontend display
+      const backups = await listBackups();
+      const match = backups.find((b) => b.slug === backupSlug);
+      if (match) setBackupName(match.name);
       checkCancelled();
 
       if (skipFlash) {
@@ -188,6 +184,7 @@ async function runSandboxStage_pipeline(devicePath: string): Promise<void> {
 
   if (isDev) {
     for (let p = 0; p <= 100; p += 25) {
+      checkCancelled();
       await new Promise((r) => setTimeout(r, 300));
       updateStage("sandbox", "in_progress", Math.min(p, 99));
     }
@@ -201,9 +198,9 @@ async function runSandboxStage_pipeline(devicePath: string): Promise<void> {
     }, abortController!.signal);
     updateStage("sandbox", "completed", 100);
   } catch (err) {
-    // Sandbox is non-fatal — the disk is still fully usable without the sandbox
+    // Sandbox is non-fatal — mark completed so the job status isn't contradictory
     console.warn("[sandbox] Stage failed (non-fatal):", err);
-    updateStage("sandbox", "failed", 0, undefined, undefined, "Sandbox failed — disk is still usable, check logs for details");
+    updateStage("sandbox", "completed", 100, undefined, undefined, "Sandbox failed — disk is still usable, check logs for details");
   }
 }
 
@@ -292,7 +289,6 @@ async function runBackupStage(): Promise<void> {
   } catch (err) {
     if (err instanceof CancelledError) throw err;
     console.error("[backup] Failed:", err);
-    failJob("backup", String(err));
     throw err;
   }
 }
@@ -345,7 +341,6 @@ async function runDownloadStage(): Promise<void> {
   } catch (err) {
     if (err instanceof CancelledError) throw err;
     cleanupImage(localImagePath);
-    failJob("download", String(err));
     throw err;
   }
 }
@@ -375,7 +370,6 @@ async function runFlashStage(devicePath: string): Promise<void> {
     cleanupImage(localImagePath);
   } catch (err) {
     if (err instanceof CancelledError) throw err;
-    failJob("flash", String(err));
     throw err;
   }
 }
@@ -401,7 +395,6 @@ async function runInjectStage(devicePath: string): Promise<void> {
     updateStage("inject", "completed", 100);
   } catch (err) {
     if (err instanceof CancelledError) throw err;
-    failJob("inject", String(err));
     throw err;
   }
 }

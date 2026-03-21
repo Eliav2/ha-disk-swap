@@ -97,6 +97,8 @@ export interface Job {
   error: string | null;
   backupName: string | null;
   createdAt: number;
+  skipFlash?: boolean;
+  sandboxEnabled?: boolean;
 }
 
 /** WebSocket messages (server → client) */
@@ -111,6 +113,7 @@ export interface StartCloneRequest {
   device: string;
   backup_slug?: string;
   skip_flash?: boolean;
+  skip_sandbox?: boolean;
 }
 
 /** Supervisor backup entry from GET /backups */
@@ -120,15 +123,16 @@ export interface SupervisorBackup {
   date: string;
   type: "full" | "partial";
   size: number; // MB float from Supervisor
+  size_bytes: number;
 }
 
 /** Response shape for GET /api/image-cache */
 export interface ImageCacheStatus {
   cached: boolean;
-  version: string;
-  board: string;
-  size_bytes: number;
-  size_human: string;
+  version?: string;
+  board?: string;
+  size_bytes?: number;
+  size_human?: string;
 }
 
 /** Supervisor backup creation response */
