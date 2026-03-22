@@ -35,12 +35,15 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
 
   const sandboxStage = stages.find((s) => s.name === "sandbox");
   const sandboxDesc = sandboxStage?.status === "in_progress" ? (sandboxStage.description ?? "") : "";
-  // Show the sandbox panel once the iframe is ready (restoring, done, or failed)
+  // Parse sandbox_status:message descriptions for the status bar
+  const sandboxStatusMsg = sandboxDesc.startsWith("sandbox_status:") ? sandboxDesc.slice(15) : null;
+  // Show the sandbox panel once the proxy is up (sandbox_status:*, restoring, done, or failed)
   const isSandboxVisible = sandboxStage?.status === "in_progress" &&
-    (sandboxDesc === "sandbox_ready" || sandboxDesc === "sandbox_restoring" || sandboxDesc === "sandbox_restore_failed" || (sandboxStage?.progress ?? 0) >= 85);
+    (sandboxStatusMsg != null || sandboxDesc === "sandbox_ready" || sandboxDesc === "sandbox_restoring" || sandboxDesc === "sandbox_restore_failed");
   const isSandboxRestoreFailed = sandboxDesc === "sandbox_restore_failed";
   const isSandboxReady = sandboxDesc === "sandbox_ready" || isSandboxRestoreFailed;
-  const isSandboxRestoring = isSandboxVisible && !isSandboxReady;
+  const isSandboxRestoring = sandboxDesc === "sandbox_restoring";
+  const isSandboxLoading = sandboxStatusMsg != null;
 
   const sandboxUrl = `http://${window.location.hostname}:8124/`;
 
@@ -114,9 +117,11 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
           <CardHeader>
             <CardTitle>Your new HA OS is running in parallel</CardTitle>
             <CardDescription>
-              {isSandboxRestoring
-                ? "Your backup is being restored automatically. The instance will restart momentarily."
-                : "Verify everything looks correct, then click Done to proceed with the disk swap. This instance is fully isolated — it cannot control your devices."}
+              {isSandboxLoading
+                ? sandboxStatusMsg
+                : isSandboxRestoring
+                  ? "Your backup is being restored automatically. The instance will restart momentarily."
+                  : "Verify everything looks correct, then click Done to proceed with the disk swap. This instance is fully isolated — it cannot control your devices."}
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
@@ -134,10 +139,10 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
                   <p className="text-sm text-muted-foreground">Connecting to sandbox instance…</p>
                 </div>
               )}
-              {isSandboxRestoring && sandboxReachable && (
+              {(isSandboxLoading || isSandboxRestoring) && sandboxReachable && (
                 <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3">
                   <div className="h-8 w-8 rounded-full border-4 border-primary border-t-transparent animate-spin" />
-                  <p className="text-sm font-medium">{sandboxStage?.description && sandboxStage.description !== "sandbox_restoring" ? sandboxStage.description : "Restoring your backup…"}</p>
+                  <p className="text-sm font-medium">{isSandboxLoading ? sandboxStatusMsg : "Restoring your backup…"}</p>
                 </div>
               )}
             </div>

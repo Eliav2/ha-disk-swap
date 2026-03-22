@@ -240,9 +240,10 @@ async function autoRestoreBackup(
   progressCb(88, "Waiting for HA to restart…");
 
   // HA shuts down within ~5s of restore being triggered, then comes back up.
-  // The brief sleep prevents waitForHttp from succeeding before the shutdown starts.
+  // After restore the Supervisor may need to pull a different Core version
+  // (backup version != latest), which can take time in DinD. Use 15-min timeout.
   await new Promise((r) => setTimeout(r, 8_000));
-  await waitForHttp(coreUrl, 5 * 60 * 1000);
+  await waitForHttp(coreUrl, 15 * 60 * 1000);
 
   console.log("[sandbox] HA Core back online after restore");
 }
@@ -366,9 +367,44 @@ export async function runSandboxStage(
     //    Creating hassio (172.30.32.0/23) adds a conflicting kernel route that
     //    breaks internet connectivity for the inner dockerd process.
     //    Pulling first ensures we have the image locally before the route exists.
-    progressCb(20, "Pulling HA Supervisor image…");
+    progressCb(15, "Pulling HA Supervisor image…");
     await $`docker -H unix://${DIND_SOCK} pull ${SUPERVISOR_IMAGE}`;
     console.log("[sandbox] Supervisor image pulled");
+
+    // Pre-pull HA Core images while DNS still works (before hassio_dns takes over).
+    // The Supervisor will find them cached and skip the slow DinD download.
+    // We need BOTH the latest version (initial boot) AND the backup's version
+    // (restore downgrades Core to the backup's version).
+    progressCb(20, "Pulling HA Core image (this may take a few minutes)…");
+    try {
+      const versionJson = await fetch("https://version.home-assistant.io/stable.json", {
+        signal: AbortSignal.timeout(15_000),
+      }).then((r) => r.json()) as Record<string, any>;
+      const latestVersion = versionJson?.homeassistant?.[machine];
+
+      // Get backup's HA version from the tar's backup.json
+      let backupVersion: string | null = null;
+      try {
+        const bjson = (await $`tar -xf /backup/${backupSlug}.tar ./backup.json -O 2>/dev/null`.nothrow().text()).trim();
+        backupVersion = JSON.parse(bjson)?.homeassistant_version ?? null;
+      } catch { /* ignore */ }
+
+      const versions = new Set<string>();
+      if (latestVersion) versions.add(latestVersion);
+      if (backupVersion) versions.add(backupVersion);
+      // Also pull landing page (needed before real Core is ready)
+      versions.add("landingpage");
+
+      for (const ver of versions) {
+        const img = `ghcr.io/home-assistant/${machine}-homeassistant:${ver}`;
+        console.log("[sandbox] Pre-pulling:", img);
+        progressCb(20, `Pulling HA Core image (${ver})…`);
+        await $`docker -H unix://${DIND_SOCK} pull ${img}`.nothrow();
+      }
+      console.log("[sandbox] HA Core images pre-pulled");
+    } catch (err) {
+      console.warn("[sandbox] HA Core pre-pull failed (will download later):", err);
+    }
 
     if (signal.aborted) throw new Error("Cancelled");
 
@@ -423,6 +459,13 @@ export async function runSandboxStage(
 
     console.log("[sandbox] hassio network ready");
 
+    // 6b. Protect the Docker gateway so the Supervisor's health check passes.
+    //     Without these rules, the system is marked unhealthy (docker_gateway_unprotected)
+    //     and the BackupManager blocks all restore operations.
+    await $`iptables -t raw -I PREROUTING -i lo -d 172.30.32.1 -j ACCEPT`.nothrow().quiet();
+    await $`iptables -t raw -I PREROUTING ! -i hassio -d 172.30.32.1 -j DROP`.nothrow().quiet();
+    console.log("[sandbox] Gateway firewall rules applied");
+
     if (signal.aborted) throw new Error("Cancelled");
 
     // 7. Start HA Supervisor (remove any leftover container from a previous run first)
@@ -455,42 +498,20 @@ export async function runSandboxStage(
 
     if (signal.aborted) throw new Error("Cancelled");
 
-    // 8. Poll for HA Core readiness (40-90% progress range).
-    //    Supervisor downloads plugins (CLI ~5MB, DNS ~5MB, Observer ~5MB) then
-    //    pulls HA Core (~715MB) and starts it. This can take several minutes
-    //    depending on network speed and whether image is cached.
-    progressCb(40, "Waiting for HA Core to start (this may take a few minutes)…");
-    const pollStart = Date.now();
-    const HA_READY_TIMEOUT = 15 * 60 * 1000; // 15 minutes
+    // 8. Wait for HA Core to become accessible, then wait for the REAL Core
+    //    (not the landing page placeholder) to start.
+    //    Progress range: 40-90%.
     const coreUrl = `http://${SUPERVISOR_IP}:8123`;
+    const CORE_READY_TIMEOUT = 30 * 60 * 1000; // 30 minutes (includes download)
 
-    let lastLogLine = "";
-    const pollInterval = setInterval(async () => {
-      if (signal.aborted) return;
-      try {
-        // Check Supervisor logs for progress hints
-        const logs = await $`docker -H unix://${DIND_SOCK} logs --tail 3 hassio_supervisor 2>&1`.nothrow().text();
-        const lastLine = logs.trim().split("\n").at(-1) ?? "";
-        if (lastLine !== lastLogLine) {
-          lastLogLine = lastLine;
-          // Rough progress: 40% + time-based estimate up to 88%
-          const elapsed = Date.now() - pollStart;
-          const fraction = Math.min(elapsed / HA_READY_TIMEOUT, 1);
-          const pct = Math.round(40 + fraction * 48);
-          progressCb(pct, "Waiting for HA Core to start (this may take a few minutes)…");
-        }
-      } catch {
-        /* ignore */
-      }
-    }, 5000);
+    progressCb(40, "sandbox_status:Waiting for HA Core…");
 
-    try {
-      await waitForHttp(coreUrl, HA_READY_TIMEOUT);
-    } finally {
-      clearInterval(pollInterval);
-    }
+    // 8a. Wait for HTTP 200 on port 8123 (landing page or real Core).
+    await waitForHttp(coreUrl, CORE_READY_TIMEOUT);
+    console.log("[sandbox] HA Core HTTP is up at", coreUrl);
 
-    console.log("[sandbox] HA Core is ready at", coreUrl);
+    // Expose proxy URL immediately so the user can see the landing page.
+    sandboxProxyUrl = coreUrl;
 
     // Stream HA Core logs alongside Supervisor logs for visibility.
     Bun.spawn(
@@ -500,18 +521,86 @@ export async function runSandboxStage(
 
     if (signal.aborted) throw new Error("Cancelled");
 
-    // 8. HA is ready — expose proxy URL, show iframe with overlay, then auto-restore.
-    sandboxProxyUrl = coreUrl;
-    progressCb(85, "sandbox_restoring");
+    // 8b. Wait for the REAL HA Core (not the landing page).
+    //     The landing page is a placeholder that returns 401 for all API calls.
+    //     We detect it by checking the Docker image tag.
+    progressCb(45, "sandbox_status:Downloading HA Core image…");
+    const realCoreStart = Date.now();
+    while (true) {
+      if (signal.aborted) throw new Error("Cancelled");
+      if (Date.now() - realCoreStart > CORE_READY_TIMEOUT) {
+        throw new Error("Timed out waiting for HA Core image download");
+      }
 
-    // The Supervisor's _block_till_run() has a hardcoded 10-min timeout per cycle.
-    // It needs ~2 cycles (~20 min) before transitioning to RUNNING (onboarding mode
-    // means is_connected() always fails — auth tokens haven't been exchanged yet).
-    // The BackupManager is blocked until the Supervisor reaches RUNNING state.
-    // Wait for the log signal instead of blindly retrying for 20 minutes.
+      // Check if the homeassistant container is still the landing page
+      const image = (await $`docker -H unix://${DIND_SOCK} inspect homeassistant --format {{.Config.Image}} 2>/dev/null`.nothrow().text()).trim();
+      if (image && !image.includes(":landingpage")) {
+        console.log("[sandbox] Real HA Core image detected:", image);
+        break;
+      }
+
+      // Parse Supervisor logs for download progress
+      const logs = (await $`docker -H unix://${DIND_SOCK} logs --tail 20 hassio_supervisor 2>&1`.nothrow().text()).trim();
+      // Find the LAST download progress line (most recent percentage)
+      const dlMatches = [...logs.matchAll(/Downloading Home Assistant Core image, (\d+)%/g)];
+      const dlMatch = dlMatches.length > 0 ? dlMatches[dlMatches.length - 1] : null;
+      if (dlMatch) {
+        const dlPct = parseInt(dlMatch[1], 10);
+        // Map download 0-100% to sandbox progress 45-80%
+        const pct = Math.round(45 + (dlPct / 100) * 35);
+        progressCb(pct, `sandbox_status:Downloading HA Core image… ${dlPct}%`);
+      } else if (logs.includes("installation in progress")) {
+        progressCb(45, "sandbox_status:Preparing HA Core installation…");
+      }
+
+      await new Promise((r) => setTimeout(r, 5_000));
+    }
+
+    // 8c. Real Core image is running — wait for it to be ready.
+    progressCb(82, "sandbox_status:Starting HA Core…");
+    console.log("[sandbox] Waiting for real HA Core to respond…");
+    // The container restarts with the real image; wait for HTTP again.
+    await new Promise((r) => setTimeout(r, 5_000)); // brief grace for container restart
+    await waitForHttp(coreUrl, 5 * 60 * 1000);
+    console.log("[sandbox] Real HA Core is ready");
+
+    if (signal.aborted) throw new Error("Cancelled");
+
+    // 8d. Wait for Supervisor RUNNING state.
+    //     The Supervisor's _block_till_run() has a hardcoded 10-min timeout per cycle.
+    //     It needs ~2 cycles (~20 min) before transitioning to RUNNING (onboarding mode
+    //     means is_connected() always fails — auth tokens haven't been exchanged yet).
+    //     The BackupManager is blocked until the Supervisor reaches RUNNING state.
+    progressCb(85, "sandbox_status:Waiting for Supervisor…");
     await waitForSupervisorRunning(signal);
 
     if (signal.aborted) throw new Error("Cancelled");
+
+    // 8e. Ignore the "healthy" job condition so backup restore isn't blocked.
+    //     The DinD environment triggers docker_gateway_unprotected (no systemd to
+    //     apply firewall rules), which blocks BackupManager operations.
+    //     Get the Supervisor API token from the homeassistant container's env.
+    try {
+      const envJson = (await $`docker -H unix://${DIND_SOCK} inspect homeassistant --format json 2>/dev/null`.nothrow().text()).trim();
+      const envVars: string[] = JSON.parse(envJson)?.[0]?.Config?.Env ?? [];
+      const tokenLine = envVars.find((e: string) => e.startsWith("SUPERVISOR_TOKEN="));
+      const supervisorToken = tokenLine?.split("=")[1]?.trim();
+      if (supervisorToken) {
+        await fetch("http://172.30.32.2/jobs/options", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${supervisorToken}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ ignore_conditions: ["healthy"] }),
+          signal: AbortSignal.timeout(10_000),
+        });
+        console.log("[sandbox] Ignored healthy job condition for backup restore");
+      } else {
+        console.warn("[sandbox] Could not find SUPERVISOR_TOKEN in homeassistant env");
+      }
+    } catch (err) {
+      console.warn("[sandbox] Failed to ignore healthy condition:", err);
+    }
+
+    progressCb(88, "sandbox_restoring");
 
     let autoRestoreFailed = false;
     if (backupSlug) {
@@ -571,6 +660,8 @@ export async function runSandboxStage(
     await $`iptables -t nat -D POSTROUTING -s 10.99.99.0/24 -o eth0 -j MASQUERADE`.nothrow().quiet();
     await $`iptables -t nat -D OUTPUT -d 172.30.32.2 -p tcp --dport 80 -j DNAT --to-destination 172.30.32.100:80`.nothrow().quiet();
     await $`ip route del 172.30.32.100/32 dev hassio`.nothrow().quiet();
+    await $`iptables -t raw -D PREROUTING -i lo -d 172.30.32.1 -j ACCEPT`.nothrow().quiet();
+    await $`iptables -t raw -D PREROUTING ! -i hassio -d 172.30.32.1 -j DROP`.nothrow().quiet();
     console.log("[sandbox] iptables/route cleanup done");
 
     // Flush and unmount
