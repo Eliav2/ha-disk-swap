@@ -1,3 +1,6 @@
+// Must be imported before any logging to capture all output
+import { getLastLines } from "./logbuffer.ts";
+
 // Catch crashes that bypass try-catch
 process.on("uncaughtException", (err) => {
   console.error("[FATAL] Uncaught exception:", err);
@@ -42,6 +45,11 @@ app.use("*", async (c, next) => {
 
 app.get("/api/health", (c) => {
   return c.json({ status: "ok" });
+});
+
+app.get("/api/logs", (c) => {
+  const n = Math.min(Number(c.req.query("lines") ?? 3), 100);
+  return c.json({ lines: getLastLines(n) });
 });
 
 app.get("/api/devices", async (c) => {

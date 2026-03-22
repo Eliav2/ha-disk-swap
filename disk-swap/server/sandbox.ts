@@ -371,39 +371,54 @@ export async function runSandboxStage(
     await $`docker -H unix://${DIND_SOCK} pull ${SUPERVISOR_IMAGE}`;
     console.log("[sandbox] Supervisor image pulled");
 
-    // Pre-pull HA Core images while DNS still works (before hassio_dns takes over).
-    // The Supervisor will find them cached and skip the slow DinD download.
-    // We need BOTH the latest version (initial boot) AND the backup's version
-    // (restore downgrades Core to the backup's version).
-    progressCb(20, "Pulling HA Core image (this may take a few minutes)…");
+    // Pre-pull ALL images the Supervisor needs while DNS still works
+    // (before hassio_dns takes over and makes pulls extremely slow).
+    progressCb(20, "Pulling HA images (this may take a few minutes)…");
     try {
       const versionJson = await fetch("https://version.home-assistant.io/stable.json", {
         signal: AbortSignal.timeout(15_000),
       }).then((r) => r.json()) as Record<string, any>;
-      const latestVersion = versionJson?.homeassistant?.[machine];
 
-      // Get backup's HA version from the tar's backup.json
+      // Determine architecture from Supervisor image template
+      const arch = (versionJson?.images?.cli as string)?.match(/\{arch\}/)?.[0]
+        ? (SUPERVISOR_IMAGE.match(/ghcr\.io\/home-assistant\/(\w+)-hassio/)?.[1] ?? "aarch64")
+        : "aarch64";
+
+      // HA Core: latest + backup version + landing page
+      const coreImages: string[] = [];
+      const latestVersion = versionJson?.homeassistant?.[machine];
+      if (latestVersion) coreImages.push(`ghcr.io/home-assistant/${machine}-homeassistant:${latestVersion}`);
       let backupVersion: string | null = null;
       try {
         const bjson = (await $`tar -xf /backup/${backupSlug}.tar ./backup.json -O 2>/dev/null`.nothrow().text()).trim();
-        backupVersion = JSON.parse(bjson)?.homeassistant_version ?? null;
+        const meta = JSON.parse(bjson);
+        backupVersion = meta?.homeassistant?.version ?? meta?.homeassistant_version ?? null;
       } catch { /* ignore */ }
+      if (backupVersion && backupVersion !== latestVersion) {
+        coreImages.push(`ghcr.io/home-assistant/${machine}-homeassistant:${backupVersion}`);
+      }
+      coreImages.push(`ghcr.io/home-assistant/${machine}-homeassistant:landingpage`);
 
-      const versions = new Set<string>();
-      if (latestVersion) versions.add(latestVersion);
-      if (backupVersion) versions.add(backupVersion);
-      // Also pull landing page (needed before real Core is ready)
-      versions.add("landingpage");
+      // Supervisor plugins: cli, dns, observer, multicast, audio
+      const plugins = ["cli", "dns", "observer", "multicast", "audio"];
+      const pluginImages = plugins
+        .map((p) => {
+          const ver = versionJson?.[p];
+          return ver ? `ghcr.io/home-assistant/${arch}-hassio-${p}:${ver}` : null;
+        })
+        .filter((img): img is string => img != null);
 
-      for (const ver of versions) {
-        const img = `ghcr.io/home-assistant/${machine}-homeassistant:${ver}`;
+      const allImages = [...coreImages, ...pluginImages];
+      for (let i = 0; i < allImages.length; i++) {
+        const img = allImages[i];
+        const label = img.split("/").pop() ?? img;
+        progressCb(15 + Math.round((i / allImages.length) * 15), `Pulling ${label}…`);
         console.log("[sandbox] Pre-pulling:", img);
-        progressCb(20, `Pulling HA Core image (${ver})…`);
         await $`docker -H unix://${DIND_SOCK} pull ${img}`.nothrow();
       }
-      console.log("[sandbox] HA Core images pre-pulled");
+      console.log("[sandbox] All images pre-pulled");
     } catch (err) {
-      console.warn("[sandbox] HA Core pre-pull failed (will download later):", err);
+      console.warn("[sandbox] Image pre-pull failed (will download later):", err);
     }
 
     if (signal.aborted) throw new Error("Cancelled");

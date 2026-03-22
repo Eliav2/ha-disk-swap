@@ -59,3 +59,10 @@ export async function fetchCurrentJob(): Promise<Job | null> {
 export async function signalSandboxDone(): Promise<void> {
   await fetch("api/sandbox-done", { method: "POST" });
 }
+
+export async function fetchLogs(lines = 3): Promise<string[]> {
+  const res = await fetch(`api/logs?lines=${lines}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.lines ?? [];
+}

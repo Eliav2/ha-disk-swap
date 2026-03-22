@@ -1,11 +1,12 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import { useStore } from "@tanstack/react-store";
+import { useQuery } from "@tanstack/react-query";
 import type { Device, StageState } from "@/types";
 import { ExternalLink } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StageRow } from "@/components/StageRow";
-import { cancelClone, signalSandboxDone } from "@/lib/api";
+import { cancelClone, signalSandboxDone, fetchLogs } from "@/lib/api";
 import { actions, appStore } from "@/store";
 import { useSystemInfo } from "@/hooks/use-system-info";
 
@@ -18,7 +19,6 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
   const [cancelling, setCancelling] = useState(false);
   const [sandboxDone, setSandboxDone] = useState(false);
   const [sandboxReachable, setSandboxReachable] = useState(false);
-  const probeRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isJobDone = useStore(appStore, (s) => s.isJobDone);
   const backupName = useStore(appStore, (s) => s.backupName);
   const { data: systemInfo } = useSystemInfo();
@@ -47,20 +47,25 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
 
   const sandboxUrl = `http://${window.location.hostname}:8124/`;
 
-  // Probe port 8124 until reachable, then stop polling
-  useEffect(() => {
-    if (!isSandboxVisible || sandboxReachable) return;
-    let stopped = false;
-    const probe = async () => {
-      try {
-        await fetch(sandboxUrl, { mode: "no-cors", signal: AbortSignal.timeout(3000) });
-        if (!stopped) setSandboxReachable(true);
-      } catch { /* not ready yet */ }
-    };
-    probe();
-    probeRef.current = setInterval(probe, 3000);
-    return () => { stopped = true; clearInterval(probeRef.current!); };
-  }, [isSandboxVisible, sandboxReachable]);
+  // Probe port 8124 until reachable — once connected, stop polling
+  useQuery({
+    queryKey: ["sandbox-probe"],
+    queryFn: async () => {
+      await fetch(sandboxUrl, { mode: "no-cors", signal: AbortSignal.timeout(3000) });
+      setSandboxReachable(true);
+      return true;
+    },
+    refetchInterval: isSandboxVisible && !sandboxReachable ? 3000 : false,
+    enabled: isSandboxVisible && !sandboxReachable,
+    retry: false,
+  });
+
+  const { data: logLines = [] } = useQuery({
+    queryKey: ["logs"],
+    queryFn: () => fetchLogs(3),
+    refetchInterval: isFinished ? false : 2000,
+    staleTime: 1000,
+  });
 
   async function handleCancel() {
     setCancelling(true);
@@ -98,12 +103,19 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
                 rel="noopener noreferrer"
                 className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
               >
-                See detailed logs
+                Full logs
                 <ExternalLink className="h-3 w-3" />
               </a>
             )}
           </div>
           <CardDescription>{device.path}</CardDescription>
+          {!isFinished && logLines.length > 0 && (
+            <div className="mt-2 rounded bg-muted/50 px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground overflow-hidden">
+              {logLines.map((line, i) => (
+                <div key={i} className="truncate">{line}</div>
+              ))}
+            </div>
+          )}
         </CardHeader>
         <CardContent className="space-y-4">
           {stages.map((stage) => (
