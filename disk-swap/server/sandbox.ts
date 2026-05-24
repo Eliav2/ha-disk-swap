@@ -10,9 +10,19 @@ const ARCH_MAP: Record<string, string> = {
   aarch64: "aarch64",
   x86_64: "amd64",
 };
-const rawArch = (await $`uname -m`.text()).trim();
-const SUPERVISOR_ARCH = ARCH_MAP[rawArch] ?? rawArch;
-const SUPERVISOR_IMAGE = `ghcr.io/home-assistant/${SUPERVISOR_ARCH}-hassio-supervisor:latest`;
+
+// Lazy arch detection — top-level `await $\`uname -m\`` would block module load and
+// take the whole server down if uname is slow/unavailable. Cached after first call.
+let cachedArch: string | null = null;
+async function getSupervisorArch(): Promise<string> {
+  if (cachedArch) return cachedArch;
+  const rawArch = (await $`uname -m`.text()).trim();
+  cachedArch = ARCH_MAP[rawArch] ?? rawArch;
+  return cachedArch;
+}
+async function getSupervisorImage(): Promise<string> {
+  return `ghcr.io/home-assistant/${await getSupervisorArch()}-hassio-supervisor:latest`;
+}
 
 // HA Core runs in Docker --network=host mode (Supervisor default when no HA OS is present).
 // It binds to 0.0.0.0:8123 in the outer container's network namespace.
@@ -105,16 +115,50 @@ async function waitForDockerd(timeoutMs: number): Promise<void> {
   throw new Error(`dockerd socket ${DIND_SOCK} not ready after ${timeoutMs}ms`);
 }
 
-/** Poll supervisor logs until it reports RUNNING state (up to 25 min). */
-async function waitForSupervisorRunning(signal: AbortSignal): Promise<void> {
-  const deadline = Date.now() + 25 * 60 * 1000;
+/**
+ * Poll supervisor logs until it reports RUNNING state (up to 25 min).
+ *
+ * `progressCb` (optional) is called every ~10s with a (percent, description) tuple
+ * so the UI can show meaningful state during the long wait — see
+ * STARTUP_API_RESPONSE_TIMEOUT in HA Supervisor: in onboarding mode the
+ * Supervisor needs ~2 × 10-min cycles before transitioning to RUNNING because
+ * `hassio` integration is absent and `is_connected()` always fails. We detect
+ * which cycle we're in by counting the "Can't start Home Assistant Core" log
+ * lines (Supervisor's own typo: "rebuiling") and linearly bump the progress
+ * percent between 85 and 95 so the bar visibly moves.
+ */
+async function waitForSupervisorRunning(
+  signal: AbortSignal,
+  progressCb?: (percent: number, description: string) => void,
+): Promise<void> {
+  const start = Date.now();
+  const totalMs = 20 * 60 * 1000; // typical onboarding wait
+  const deadline = start + 25 * 60 * 1000;
+  const expectedCycles = 2;
+  let lastTick = 0;
+
   while (Date.now() < deadline) {
     if (signal.aborted) throw new Error("Cancelled");
-    const logs = await $`docker -H unix://${DIND_SOCK} logs --tail 50 hassio_supervisor 2>&1`.nothrow().text();
+    const logs = await $`docker -H unix://${DIND_SOCK} logs --tail 100 hassio_supervisor 2>&1`.nothrow().text();
     if (logs.includes("Supervisor is up and running")) {
       console.log("[sandbox] Supervisor reached RUNNING state");
       return;
     }
+
+    if (progressCb && Date.now() - lastTick >= 10_000) {
+      lastTick = Date.now();
+      const elapsedSec = Math.floor((Date.now() - start) / 1000);
+      const remainingSec = Math.max(Math.floor((totalMs - (Date.now() - start)) / 1000), 30);
+      const cyclesDone = (logs.match(/Can't start Home Assistant Core/g) ?? []).length;
+      const cycleNum = Math.min(cyclesDone + 1, expectedCycles);
+      const remainingMin = Math.ceil(remainingSec / 60);
+      const percent = 85 + Math.min(10, Math.round((elapsedSec / (totalMs / 1000)) * 10));
+      progressCb(
+        percent,
+        `sandbox_status:Waiting for Supervisor (boot cycle ${cycleNum}/${expectedCycles}, ~${remainingMin} min remaining)…`,
+      );
+    }
+
     await new Promise((r) => setTimeout(r, 5_000));
   }
   console.warn("[sandbox] Timed out waiting for Supervisor RUNNING — proceeding anyway");
@@ -260,6 +304,16 @@ export async function runSandboxStage(
   sandboxProxyUrl = null;
 
   let dockerdProc: ReturnType<typeof Bun.spawn> | null = null;
+  // Snapshot /etc/resolv.conf so we can restore it on cleanup. The sandbox stage
+  // overwrites it with 8.8.8.8 (see step 4 below); without restoring, all
+  // subsequent Supervisor API calls (http://supervisor) lose their DNS resolver
+  // until the addon container restarts.
+  let originalResolvConf: string | null = null;
+  try {
+    originalResolvConf = await Bun.file("/etc/resolv.conf").text();
+  } catch {
+    /* file unreadable — restore step will skip */
+  }
 
   try {
     // 1. Mount target disk's data partition via loop device
@@ -295,13 +349,16 @@ export async function runSandboxStage(
     // in the addon container's filesystem or Docker will refuse to create the containers.
     //
     // /run/dbus         — must be a directory (Supervisor mounts DBus socket dir)
+    // /run/supervisor   — must be a directory (Supervisor 2026.5+ bind-mounts this into
+    //                     HA Core; without it, HA Core creation fails with
+    //                     "invalid mount config for type bind: bind source path does not exist")
     // /etc/machine-id   — must be a FILE; Docker creates an empty directory placeholder
     //                     when the host bind-mount source is missing, which causes
     //                     IsADirectoryError / "bind source does not exist" on child starts
     // /run/docker.sock  — must be a socket/file; our inner dockerd listens on
     //                     /run/dind.sock, so symlink the standard path to it so the
     //                     Observer plugin can connect
-    await $`mkdir -p /run/dbus`.nothrow().quiet();
+    await $`mkdir -p /run/dbus /run/supervisor`.nothrow().quiet();
     await $`sh -c '[ -d /etc/machine-id ] && rm -rf /etc/machine-id; true'`.nothrow().quiet();
     await Bun.write("/etc/machine-id", crypto.randomUUID().replace(/-/g, "") + "\n");
     await $`ln -sf ${DIND_SOCK} /run/docker.sock`.nothrow().quiet();
@@ -342,7 +399,10 @@ export async function runSandboxStage(
         // (e.g. /mnt/newsd/supervisor) into HA Core's container.
         `mount -o remount,rw /proc/sys && mount -o remount,rw /sys/fs/cgroup && sysctl -w net.ipv4.conf.default.rp_filter=0 && mount --make-shared /mnt/newsd && exec ${dockerdArgs}`,
       ],
-      { stdout: Bun.file("/tmp/dind.log"), stderr: Bun.file("/tmp/dind.log") },
+      // inherit so dockerd output reaches the addon log (and is captured in the
+      // ring buffer surfaced by /api/logs). Previously written to /tmp/dind.log
+      // which was invisible from the UI on failure.
+      { stdout: "inherit", stderr: "inherit" },
     );
 
     await waitForDockerd(30_000);
@@ -368,7 +428,8 @@ export async function runSandboxStage(
     //    breaks internet connectivity for the inner dockerd process.
     //    Pulling first ensures we have the image locally before the route exists.
     progressCb(15, "Pulling HA Supervisor image…");
-    await $`docker -H unix://${DIND_SOCK} pull ${SUPERVISOR_IMAGE}`;
+    const supervisorImage = await getSupervisorImage();
+    await $`docker -H unix://${DIND_SOCK} pull ${supervisorImage}`;
     console.log("[sandbox] Supervisor image pulled");
 
     // Pre-pull ALL images the Supervisor needs while DNS still works
@@ -381,7 +442,7 @@ export async function runSandboxStage(
 
       // Determine architecture from Supervisor image template
       const arch = (versionJson?.images?.cli as string)?.match(/\{arch\}/)?.[0]
-        ? (SUPERVISOR_IMAGE.match(/ghcr\.io\/home-assistant\/(\w+)-hassio/)?.[1] ?? "aarch64")
+        ? (supervisorImage.match(/ghcr\.io\/home-assistant\/(\w+)-hassio/)?.[1] ?? "aarch64")
         : "aarch64";
 
       // HA Core: latest + backup version + landing page
@@ -502,7 +563,7 @@ export async function runSandboxStage(
       -v ${DIND_SOCK}:/run/docker.sock:rw \
       -v /mnt/newsd/supervisor:/data:rw \
       -v /etc/machine-id:/etc/machine-id:ro \
-      ${SUPERVISOR_IMAGE}`;
+      ${supervisorImage}`;
     console.log("[sandbox] Supervisor container started");
 
     // Stream Supervisor logs to addon stdout for visibility in the HA log panel.
@@ -587,7 +648,7 @@ export async function runSandboxStage(
     //     means is_connected() always fails — auth tokens haven't been exchanged yet).
     //     The BackupManager is blocked until the Supervisor reaches RUNNING state.
     progressCb(85, "sandbox_status:Waiting for Supervisor…");
-    await waitForSupervisorRunning(signal);
+    await waitForSupervisorRunning(signal, (percent, description) => progressCb(percent, description));
 
     if (signal.aborted) throw new Error("Cancelled");
 
@@ -686,5 +747,15 @@ export async function runSandboxStage(
     // Ensure securityfs is mounted — the inner dockerd can unmount it as a
     // side-effect of mount namespace cleanup, which breaks AppArmor on the host.
     await $`mount -t securityfs securityfs /sys/kernel/security`.nothrow().quiet();
+
+    // Restore /etc/resolv.conf so Supervisor API calls (http://supervisor)
+    // continue working after the sandbox stage.
+    if (originalResolvConf !== null) {
+      try {
+        await Bun.write("/etc/resolv.conf", originalResolvConf);
+      } catch (err) {
+        console.warn("[sandbox] Failed to restore /etc/resolv.conf:", err);
+      }
+    }
   }
 }

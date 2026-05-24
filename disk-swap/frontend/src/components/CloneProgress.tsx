@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useStore } from "@tanstack/react-store";
 import { useQuery } from "@tanstack/react-query";
 import type { Device, StageState } from "@/types";
@@ -6,7 +6,7 @@ import { ExternalLink } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StageRow } from "@/components/StageRow";
-import { cancelClone, signalSandboxDone, fetchLogs } from "@/lib/api";
+import { cancelClone, signalSandboxDone, fetchLogs, fetchSandboxReady } from "@/lib/api";
 import { actions, appStore } from "@/store";
 import { useSystemInfo } from "@/hooks/use-system-info";
 
@@ -33,6 +33,10 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
     (s) => s.status === "completed" || s.status === "failed",
   );
 
+  // Sandbox-only mode: the only stage rendered is `sandbox`. Adjust the page
+  // header so users in test-mode don't see "Cloning…" — nothing is being cloned.
+  const isSandboxOnly = stages.length === 1 && stages[0].name === "sandbox";
+
   const sandboxStage = stages.find((s) => s.name === "sandbox");
   const sandboxDesc = sandboxStage?.status === "in_progress" ? (sandboxStage.description ?? "") : "";
   // Parse sandbox_status:message descriptions for the status bar
@@ -47,18 +51,25 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
 
   const sandboxUrl = `http://${window.location.hostname}:8124/`;
 
-  // Probe port 8124 until reachable — once connected, stop polling
-  useQuery({
-    queryKey: ["sandbox-probe"],
-    queryFn: async () => {
-      await fetch(sandboxUrl, { mode: "no-cors", signal: AbortSignal.timeout(3000) });
-      setSandboxReachable(true);
-      return true;
-    },
-    refetchInterval: isSandboxVisible && !sandboxReachable ? 3000 : false,
-    enabled: isSandboxVisible && !sandboxReachable,
-    retry: false,
-  });
+  // Same-origin readiness probe — asks the addon backend whether the sandbox
+  // proxy is wired up. Replaced the previous cross-origin `:8124/` probe which
+  // suffered from (a) variable inner-HA response times triggering aborts and
+  // (b) Chrome's negative-cache holding `ERR_ADDRESS_UNREACHABLE` open for
+  // ~30s whenever the macOS↔UTM bridge briefly drops connectivity.
+  useEffect(() => {
+    if (!isSandboxVisible || sandboxReachable) return;
+    let cancelled = false;
+    const probe = async () => {
+      const ready = await fetchSandboxReady();
+      if (!cancelled && ready) setSandboxReachable(true);
+    };
+    probe();
+    const id = setInterval(probe, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [isSandboxVisible, sandboxReachable]);
 
   const { data: logLines = [] } = useQuery({
     queryKey: ["logs"],
@@ -85,10 +96,13 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Cloning...</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">
+          {isSandboxOnly ? "Testing Live Boot..." : "Cloning..."}
+        </h1>
         <p className="text-muted-foreground text-sm">
-          Writing to {device.vendor} {device.model} ({device.size_human}).
-          Do not unplug the device.
+          {isSandboxOnly
+            ? <>Booting the inner HA against the existing data partition on {device.vendor} {device.model}. Do not unplug the device.</>
+            : <>Writing to {device.vendor} {device.model} ({device.size_human}). Do not unplug the device.</>}
         </p>
       </div>
 
@@ -127,13 +141,17 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
       {isSandboxVisible && (
         <Card>
           <CardHeader>
-            <CardTitle>Your new HA OS is running in parallel</CardTitle>
+            <CardTitle>
+              {isSandboxOnly ? "Inner HA Core" : "Your new HA OS is running in parallel"}
+            </CardTitle>
             <CardDescription>
               {isSandboxLoading
                 ? sandboxStatusMsg
                 : isSandboxRestoring
                   ? "Your backup is being restored automatically. The instance will restart momentarily."
-                  : "Verify everything looks correct, then click Done to proceed with the disk swap. This instance is fully isolated — it cannot control your devices."}
+                  : isSandboxOnly
+                    ? "Test instance booted against the device's existing data partition. Click Done to shut it down. The inner HA is fully isolated — it cannot control your devices."
+                    : "Verify everything looks correct, then click Done to proceed with the disk swap. This instance is fully isolated — it cannot control your devices."}
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
@@ -182,7 +200,7 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
         </Card>
       )}
 
-      {!isFinished && !isSandboxReady && (
+      {!isFinished && !isSandboxReady && !hasFailed && (
         <>
           <Button
             variant="outline"

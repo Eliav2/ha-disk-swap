@@ -40,7 +40,18 @@ function buildStages(
   systemInfo?: SystemInfoResponse | null,
   skipFlash?: boolean,
   sandboxEnabled?: boolean,
+  mode: "clone" | "sandbox_only" = "clone",
 ): StageState[] {
+  if (mode === "sandbox_only") {
+    return [{
+      name: "sandbox" as const,
+      label: "Live Boot",
+      description: "Boots the inner HA against the existing data partition. Sandbox-only test mode.",
+      status: "pending" as const,
+      progress: 0,
+      experimental: true,
+    }];
+  }
   const version = systemInfo?.os_version ?? "latest";
   const board = systemInfo?.board_slug ?? "your device";
   const releaseUrl = `https://github.com/home-assistant/operating-system/releases/tag/${version}`;
@@ -103,17 +114,26 @@ export const actions = {
     appStore.setState((s) => ({ ...s, selectedDevice: device }));
   },
 
+  /** From device_select, go directly to backup_select. The confirm dialog is now
+   * the LAST step (after toggles are chosen) so its copy can be accurate. */
   next() {
-    appStore.setState((s) => ({ ...s, screen: "confirm" as const }));
-  },
-
-  /** After the erase warning, go to backup selection. */
-  confirmErase() {
     appStore.setState((s) => ({
       ...s,
       screen: "backup_select" as const,
+      // Default skipFlash based on whether the device already has HA OS — the
+      // user can still flip it from the Reflash switch on backup_select.
       skipFlash: s.selectedDevice?.has_ha_os ?? false,
     }));
+  },
+
+  /** From backup_select, open the final confirm dialog. */
+  openConfirm() {
+    appStore.setState((s) => ({ ...s, screen: "confirm" as const }));
+  },
+
+  /** Cancel the confirm dialog — return to backup_select to allow toggling. */
+  closeConfirm() {
+    appStore.setState((s) => ({ ...s, screen: "backup_select" as const }));
   },
 
   selectBackup(backup: BackupSelection) {
@@ -141,27 +161,31 @@ export const actions = {
     });
   },
 
-  cancel() {
-    appStore.setState((s) => ({
-      ...s,
-      screen: "device_select" as const,
-      selectedDevice: null,
+  /** Sandbox-only test mode: jumps straight to the progress screen with only the
+   *  sandbox stage. No backup/download/flash/inject. Triggered from the device
+   *  card's "Test Live Boot" link when the device already has HA OS. */
+  startSandboxOnly(device: Device) {
+    appStore.setState(() => ({
+      screen: "progress" as const,
+      selectedDevice: device,
       selectedBackup: null,
       backupName: null,
       skipFlash: false,
-      sandboxEnabled: false,
+      sandboxEnabled: true,
       isJobDone: false,
+      isCheckingJob: false,
+      stages: buildStages({ type: "new" }, null, false, true, "sandbox_only"),
     }));
   },
 
-  /** Go back from backup_select to confirm (device selection). */
+  /** Go back from backup_select to device_select. */
   backToDeviceSelect() {
     appStore.setState((s) => ({
       ...s,
       screen: "device_select" as const,
       selectedBackup: null,
       skipFlash: false,
-      sandboxEnabled: false,
+      sandboxEnabled: true,
     }));
   },
 
@@ -200,8 +224,9 @@ export const actions = {
     const isCompleted = job.status === "completed";
     const skipFlash = job.skipFlash ?? false;
     const sandboxEnabled = job.sandboxEnabled ?? false;
+    const mode = job.mode ?? "clone";
 
-    const base = buildStages({ type: "new" }, systemInfo, skipFlash, sandboxEnabled);
+    const base = buildStages({ type: "new" }, systemInfo, skipFlash, sandboxEnabled, mode);
     const stages: StageState[] = base.map((init) => {
       const jobStage = job.stages[init.name];
       return {
@@ -233,7 +258,7 @@ export const actions = {
       selectedBackup: null,
       backupName: null,
       skipFlash: false,
-      sandboxEnabled: false,
+      sandboxEnabled: true,
       stages: defaultStages.map((st) => ({ ...st })),
       isJobDone: false,
       isCheckingJob: false,

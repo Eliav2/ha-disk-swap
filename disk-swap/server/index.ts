@@ -14,7 +14,7 @@ import { serveStatic } from "hono/bun";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import type { StartCloneRequest } from "../shared/types.ts";
 import { getCurrentJob, dismissJob, subscribe } from "./jobs.ts";
-import { runClonePipeline, cancelClone } from "./clone.ts";
+import { runClonePipeline, runSandboxOnlyPipeline, cancelClone } from "./clone.ts";
 import { getImageCacheInfo, discardCachedImage } from "./images.ts";
 import { signalSandboxDone, getSandboxProxyUrl } from "./sandbox.ts";
 
@@ -149,6 +149,20 @@ app.post("/api/cancel-clone", (c) => {
   return c.json({ ok: true });
 });
 
+app.post("/api/start-sandbox", async (c) => {
+  try {
+    const body = await c.req.json<{ device?: string }>();
+    if (!body.device) {
+      return c.json({ error: "Missing 'device' field" }, 400);
+    }
+    const job = await runSandboxOnlyPipeline(body.device);
+    return c.json({ job_id: job.id });
+  } catch (err) {
+    console.error("Start sandbox failed:", err);
+    return c.json({ error: String(err) }, 400);
+  }
+});
+
 app.get("/api/jobs/current", (c) => {
   const job = getCurrentJob();
   if (!job) {
@@ -225,6 +239,15 @@ app.get(
 app.post("/api/sandbox-done", (c) => {
   signalSandboxDone();
   return c.json({ ok: true });
+});
+
+// Fast same-origin probe used by the frontend to decide when to render the
+// sandbox iframe. Returns whether the inner-HA proxy is wired up. Replaces the
+// previous cross-origin no-cors probe which suffered from variable inner-HA
+// response times triggering 3s AbortSignal timeouts → multi-cycle retries →
+// long "Connecting to sandbox instance…" spinner after a page reload.
+app.get("/api/sandbox/ready", (c) => {
+  return c.json({ ready: getSandboxProxyUrl() !== null });
 });
 
 // --- Sandbox direct-port proxy ---

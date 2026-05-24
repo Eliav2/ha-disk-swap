@@ -101,36 +101,42 @@ export function BackupSelect({ device, selectedBackup, skipFlash, sandboxEnabled
           </p>
         )}
 
-        {backups && backups.length > 0 && backups.map((backup) => {
-          const isSelected =
-            selectedBackup?.type === "existing" && selectedBackup.slug === backup.slug;
-          return (
-            <Card
-              key={backup.slug}
-              size="sm"
-              className={cn(
-                "cursor-pointer transition-colors",
-                isSelected
-                  ? "ring-primary ring-2"
-                  : "hover:bg-muted/50",
-              )}
-              onClick={() => onSelect({ type: "existing", slug: backup.slug, name: backup.name })}
-            >
-              <CardContent>
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium">{backup.name}</span>
-                    <Badge variant="secondary">{backup.type}</Badge>
-                    <Badge variant="outline">{formatSize(backup.size)}</Badge>
-                  </div>
-                  <p className="text-muted-foreground text-xs">
-                    {formatDate(backup.date)}
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
+        {backups && backups.length > 0 && (
+          // p-1 inside the scroll container leaves room for the selected-card
+          // ring-2 outline; without it the focus ring clips against the edges.
+          <div className="max-h-80 space-y-2 overflow-y-auto p-1">
+            {backups.map((backup) => {
+              const isSelected =
+                selectedBackup?.type === "existing" && selectedBackup.slug === backup.slug;
+              return (
+                <Card
+                  key={backup.slug}
+                  size="sm"
+                  className={cn(
+                    "cursor-pointer transition-colors",
+                    isSelected
+                      ? "ring-primary ring-2"
+                      : "hover:bg-muted/50",
+                  )}
+                  onClick={() => onSelect({ type: "existing", slug: backup.slug, name: backup.name })}
+                >
+                  <CardContent>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{backup.name}</span>
+                        <Badge variant="secondary">{backup.type}</Badge>
+                        <Badge variant="outline">{formatSize(backup.size)}</Badge>
+                      </div>
+                      <p className="text-muted-foreground text-xs">
+                        {formatDate(backup.date)}
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        )}
 
         {backups && backups.length === 0 && (
           <p className="text-muted-foreground text-sm">
@@ -269,7 +275,7 @@ export function BackupSelect({ device, selectedBackup, skipFlash, sandboxEnabled
           disabled={!selectedBackup}
           onClick={onNext}
         >
-          Start Clone
+          Continue
         </Button>
       </div>
     </div>
