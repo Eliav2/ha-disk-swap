@@ -4,7 +4,8 @@ import { appStore, actions } from "@/store";
 import { useCloneProgress } from "@/hooks/use-clone-progress";
 import { useSystemInfo } from "@/hooks/use-system-info";
 import { useImageCache } from "@/hooks/use-image-cache";
-import { fetchCurrentJob, startClone } from "@/lib/api";
+import { fetchCurrentJob, startClone, startSandboxOnly } from "@/lib/api";
+import type { Device } from "@/types";
 import { DeviceList } from "@/components/DeviceList";
 import { BackupSelect } from "@/components/BackupSelect";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -56,6 +57,15 @@ export default function App() {
     }
   }
 
+  async function handleTestLiveBoot(device: Device) {
+    actions.startSandboxOnly(device);
+    try {
+      await startSandboxOnly(device.path);
+    } catch {
+      // WebSocket will report stage errors
+    }
+  }
+
   return (
     <div className="mx-auto max-w-2xl px-4 py-6">
       {screen === "device_select" && !isCheckingJob && (
@@ -63,14 +73,7 @@ export default function App() {
           selectedDevice={selectedDevice}
           onSelect={actions.selectDevice}
           onNext={actions.next}
-        />
-      )}
-
-      {screen === "confirm" && selectedDevice && (
-        <ConfirmDialog
-          device={selectedDevice}
-          onConfirm={actions.confirmErase}
-          onCancel={actions.cancel}
+          onTestLiveBoot={handleTestLiveBoot}
         />
       )}
 
@@ -83,8 +86,19 @@ export default function App() {
           onSelect={actions.selectBackup}
           onSetSkipFlash={actions.setSkipFlash}
           onSetSandboxEnabled={actions.setSandboxEnabled}
-          onNext={handleStart}
+          onNext={actions.openConfirm}
           onBack={actions.backToDeviceSelect}
+        />
+      )}
+
+      {screen === "confirm" && selectedDevice && (
+        <ConfirmDialog
+          device={selectedDevice}
+          selectedBackup={selectedBackup}
+          skipFlash={skipFlash}
+          sandboxEnabled={sandboxEnabled}
+          onConfirm={handleStart}
+          onCancel={actions.closeConfirm}
         />
       )}
 

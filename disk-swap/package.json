@@ -6,6 +6,7 @@
   "scripts": {
     "start": "bun run server/index.ts",
     "dev": "DEV=1 bun --watch run server/index.ts",
+    "test": "bun test",
     "build": "cd frontend && bun run build",
     "sync": "rsync -av --delete --exclude='frontend/' --exclude='node_modules/' ./ root@192.168.64.2:/addons/disk-swap/",
     "rebuild": "ssh root@192.168.64.2 'ha store reload && (ha apps rebuild local_disk-swap 2>/dev/null || ha apps update local_disk-swap)'",

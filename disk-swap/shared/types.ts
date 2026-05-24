@@ -89,6 +89,8 @@ export interface StageState {
 
 export type JobStatus = "in_progress" | "completed" | "failed";
 
+export type JobMode = "clone" | "sandbox_only";
+
 export interface Job {
   id: string;
   status: JobStatus;
@@ -99,6 +101,10 @@ export interface Job {
   createdAt: number;
   skipFlash?: boolean;
   sandboxEnabled?: boolean;
+  /** "clone" runs the full pipeline. "sandbox_only" skips backup/download/flash/inject
+   *  and just boots the inner HA against the existing data partition — used for
+   *  testing sandbox.ts changes without a 20-minute clone cycle. */
+  mode?: JobMode;
 }
 
 /** WebSocket messages (server → client) */

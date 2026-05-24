@@ -7,6 +7,7 @@ export type {
   StageStatus,
   WsMessage,
   JobStatus,
+  JobMode,
   ImageCacheStatus,
 } from "@shared/types.ts";
 
