@@ -1,4 +1,5 @@
 import { $ } from "bun";
+import { readdir, stat } from "node:fs/promises";
 import { findDataPartition, getPartitionGeometry } from "./injector.ts";
 
 const DATA_MOUNT = "/mnt/newsd";
@@ -45,6 +46,50 @@ export function awaitSandboxDone(): Promise<void> {
   return new Promise((resolve) => {
     sandboxDoneResolve = resolve;
   });
+}
+
+/**
+ * Scan the mounted data partition's /supervisor/backup/ for the most-recently
+ * written backup tar and return its slug (from backup.json, falling back to
+ * the filename). Returns null if the directory is missing or empty.
+ *
+ * Used by sandbox-only mode (clone.ts passes empty backupSlug) so booting an
+ * already-cloned disk auto-restores the user's data instead of dumping them
+ * onto fresh-onboarding.
+ */
+async function findInjectedBackup(): Promise<string | null> {
+  const backupDir = `${DATA_MOUNT}/supervisor/backup`;
+  let entries: string[];
+  try {
+    entries = (await readdir(backupDir)).filter((f) => f.endsWith(".tar"));
+  } catch {
+    return null;
+  }
+  if (entries.length === 0) return null;
+
+  const stamped = await Promise.all(
+    entries.map(async (f) => {
+      const s = await stat(`${backupDir}/${f}`);
+      return { f, mtime: s.mtimeMs };
+    }),
+  );
+  stamped.sort((a, b) => b.mtime - a.mtime);
+  const newest = stamped[0].f;
+
+  // Prefer the slug declared inside backup.json (the canonical HA backup ID);
+  // fall back to the filename stem if the tar can't be inspected.
+  try {
+    const json = (
+      await $`tar -xf ${backupDir}/${newest} ./backup.json -O`.nothrow().text()
+    ).trim();
+    if (json) {
+      const meta = JSON.parse(json);
+      if (meta?.slug) return meta.slug as string;
+    }
+  } catch {
+    /* fall through */
+  }
+  return newest.replace(/\.tar$/, "");
 }
 
 /** Returns the URL of the running HA Core instance for proxying, or null if not ready. */
@@ -304,10 +349,14 @@ async function autoRestoreBackup(
 export async function runSandboxStage(
   devicePath: string,
   machine: string,
-  backupSlug: string,
+  initialBackupSlug: string,
   progressCb: (percent: number, description?: string) => void,
   signal: AbortSignal,
 ): Promise<void> {
+  // Local var: we may discover an injected backup on the data partition (when
+  // the caller passed "" from sandbox-only mode) and want to point auto-restore
+  // at it.
+  let backupSlug = initialBackupSlug;
   // Reset module-level state
   sandboxDoneResolve = null;
   sandboxProxyUrl = null;
@@ -331,6 +380,31 @@ export async function runSandboxStage(
     await $`udevadm settle --timeout=5`.nothrow().quiet();
     await setupLoop(devicePath);
     await mountPartition();
+
+    // If the data partition already holds a restored HA config (`.HA_VERSION`
+    // file at the root of homeassistant/), skip both the homeassistant wipe AND
+    // the auto-restore on this run — boot directly into the existing state.
+    // Saves the ~20-min Supervisor-RUNNING + restore cycle on repeat
+    // sandbox-only iterations against the same disk.
+    const hasRestoredConfig = await Bun.file(`${DATA_MOUNT}/supervisor/homeassistant/.HA_VERSION`).exists();
+    if (hasRestoredConfig) {
+      console.log("[sandbox] Found existing restored HA config — booting directly without re-restore");
+    }
+
+    // If the caller didn't specify a backup slug (sandbox-only mode), look on
+    // the data partition for one already injected by a previous clone — when
+    // present, we want to auto-restore it instead of showing fresh onboarding.
+    // Skip detection when we already have a restored config — there's nothing
+    // to restore into.
+    if (!backupSlug && !hasRestoredConfig) {
+      const detected = await findInjectedBackup();
+      if (detected) {
+        backupSlug = detected;
+        console.log(`[sandbox] Auto-detected injected backup: ${backupSlug}`);
+      } else {
+        console.log("[sandbox] No injected backup found — fresh onboarding mode");
+      }
+    }
 
     if (signal.aborted) throw new Error("Cancelled");
 
@@ -373,7 +447,12 @@ export async function runSandboxStage(
     await $`ln -sf ${DIND_SOCK} /run/docker.sock`.nothrow().quiet();
     await $`touch /mnt/newsd/supervisor/cid_files/homeassistant.cid`.nothrow().quiet();
     await $`rm -f /mnt/newsd/supervisor/config.json`.nothrow().quiet();
-    await $`rm -rf /mnt/newsd/supervisor/homeassistant`.nothrow().quiet();
+    // Only wipe the homeassistant config dir when we're going to re-restore;
+    // otherwise we'd throw away the previously-restored state and force a full
+    // 20-min Supervisor cycle again.
+    if (!hasRestoredConfig) {
+      await $`rm -rf /mnt/newsd/supervisor/homeassistant`.nothrow().quiet();
+    }
 
     if (signal.aborted) throw new Error("Cancelled");
 
@@ -656,8 +735,16 @@ export async function runSandboxStage(
     //     It needs ~2 cycles (~20 min) before transitioning to RUNNING (onboarding mode
     //     means is_connected() always fails — auth tokens haven't been exchanged yet).
     //     The BackupManager is blocked until the Supervisor reaches RUNNING state.
-    progressCb(85, "sandbox_status:Waiting for Supervisor…");
-    await waitForSupervisorRunning(signal, (percent, description) => progressCb(percent, description));
+    // Skip the ~20-min Supervisor RUNNING wait when there's nothing to restore.
+    // That wait exists so BackupManager is ready before we trigger restore.
+    // For sandbox-only-against-restored-disk (hasRestoredConfig) and the rare
+    // "no backup at all" path, we can go straight to ready.
+    if (backupSlug) {
+      progressCb(85, "sandbox_status:Waiting for Supervisor…");
+      await waitForSupervisorRunning(signal, (percent, description) => progressCb(percent, description));
+    } else {
+      console.log("[sandbox] No restore pending — skipping Supervisor RUNNING wait");
+    }
 
     if (signal.aborted) throw new Error("Cancelled");
 

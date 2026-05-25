@@ -78,7 +78,11 @@ export function LiveBootDrawer() {
 
   if (!sandboxActive) return null;
 
-  const sandboxUrl = `http://${window.location.hostname}:8124/`;
+  // During a restore the inner HA restarts; the iframe's document needs a hard
+  // reload to pick up the post-restore HA, otherwise it sticks on whatever it
+  // had during onboarding (often the "Welcome!" page). Bumping a cache-bust
+  // tied to `ready` flips the URL exactly once when the transition happens.
+  const sandboxUrl = `http://${window.location.hostname}:8124/${ready ? `?ts=ready` : ""}`;
   const drawerOpen = liveState === "open";
 
   async function handleDone() {
