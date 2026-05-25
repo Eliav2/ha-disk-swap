@@ -29,7 +29,7 @@ import {
 } from "./images.ts";
 import { flash, runPartprobe } from "./flasher.ts";
 import { injectBackup } from "./injector.ts";
-import { runSandboxStage } from "./sandbox.ts";
+import { runSandboxStage, awaitSandboxDone } from "./sandbox.ts";
 
 const isDev = process.env.DEV === "1";
 const MIN_DOWNLOAD_SPACE = 600 * 1024 * 1024; // 600 MB
@@ -224,10 +224,19 @@ export async function runClonePipeline(
         console.log("[clone] Starting backup stage...");
         await runBackupStage();
       }
-      // Look up backup name for frontend display
-      const backups = await listBackups();
-      const match = backups.find((b) => b.slug === backupSlug);
-      if (match) setBackupName(match.name);
+      // Look up backup name for frontend display. In DEV mode the Supervisor
+      // API isn't reachable (no SUPERVISOR_TOKEN); fall back to the mock.
+      try {
+        const { listBackups: listBackupsFn } = isDev
+          ? await import("./mock.ts")
+          : await import("./supervisor.ts");
+        const backups = await listBackupsFn();
+        const match = backups.find((b) => b.slug === backupSlug);
+        if (match) setBackupName(match.name);
+      } catch (err) {
+        // Non-fatal — the UI just won't show the human-readable name.
+        console.warn("[clone] Backup name lookup failed:", err);
+      }
       checkCancelled();
 
       if (skipFlash) {
@@ -284,11 +293,30 @@ async function runSandboxStage_pipeline(devicePath: string): Promise<void> {
   updateStage("sandbox", "in_progress", 0);
 
   if (isDev) {
-    for (let p = 0; p <= 100; p += 25) {
+    // Emit the same status descriptions a real sandbox run would, so the UI's
+    // LiveBootDrawer is exercised end-to-end in dev mode. Keep the timings
+    // short so we don't drag the dev iteration loop out.
+    const script: Array<[number, string]> = [
+      [10, "sandbox_status:Pulling HA Supervisor image…"],
+      [30, "sandbox_status:Setting up HA network…"],
+      [60, "sandbox_status:Waiting for HA Core…"],
+      [85, "sandbox_status:Waiting for Supervisor (boot cycle 1/2, ~10 min remaining)…"],
+      [99, "sandbox_ready"],
+    ];
+    for (const [pct, desc] of script) {
       checkCancelled();
-      await new Promise((r) => setTimeout(r, 300));
-      updateStage("sandbox", "in_progress", Math.min(p, 99));
+      await new Promise((r) => setTimeout(r, 500));
+      updateStage("sandbox", "in_progress", pct, undefined, undefined, desc);
     }
+    // Hold the "ready" state until the user clicks Done (or cancels) — mirrors
+    // real-mode behaviour where the inner HA stays up until signalSandboxDone()
+    // fires from POST /api/sandbox-done (drawer's "Done" button).
+    await Promise.race([
+      awaitSandboxDone(),
+      new Promise<void>((resolve) => {
+        abortController?.signal.addEventListener("abort", () => resolve(), { once: true });
+      }),
+    ]);
     updateStage("sandbox", "completed", 100);
     return;
   }

@@ -6,8 +6,11 @@ import { actions } from "@/store";
  * Connect to the backend WebSocket for real-time clone progress.
  * Automatically reconnects on drop (e.g. addon restart) so the UI
  * always reflects the current server state.
+ *
+ * `onCancelled` is called after `actions.reset()` so the caller can navigate
+ * out of /clone or /test routes when the pipeline is killed.
  */
-export function useCloneProgress(active: boolean) {
+export function useCloneProgress(active: boolean, onCancelled?: () => void) {
   useEffect(() => {
     if (!active) return;
 
@@ -43,6 +46,7 @@ export function useCloneProgress(active: boolean) {
             break;
           case "cancelled":
             actions.reset();
+            onCancelled?.();
             break;
         }
       };
@@ -61,5 +65,8 @@ export function useCloneProgress(active: boolean) {
       if (reconnectTimer !== null) clearTimeout(reconnectTimer);
       ws?.close();
     };
+    // onCancelled intentionally excluded — we don't want to reconnect on every
+    // identity change of the callback. Caller is responsible for stable refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
 }

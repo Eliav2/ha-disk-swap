@@ -38,6 +38,15 @@ export function signalSandboxDone(): void {
   sandboxDoneResolve?.();
 }
 
+/** Returns a promise that resolves the next time `signalSandboxDone()` is called.
+ *  Used by the dev-mode sandbox fake in clone.ts so the drawer's Done button
+ *  actually finishes the fake stage instead of hanging. */
+export function awaitSandboxDone(): Promise<void> {
+  return new Promise((resolve) => {
+    sandboxDoneResolve = resolve;
+  });
+}
+
 /** Returns the URL of the running HA Core instance for proxying, or null if not ready. */
 export function getSandboxProxyUrl(): string | null {
   return sandboxProxyUrl;

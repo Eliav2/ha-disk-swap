@@ -30,6 +30,7 @@ dist/
 
 # Local development
 .env
+.dev-data/
 
 .claude/settings.local.json
 
