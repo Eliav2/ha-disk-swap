@@ -130,6 +130,39 @@ async function findInjectedBackup(): Promise<string | null> {
   return newest.replace(/\.tar$/, "");
 }
 
+/** Addons whose slug matches this are NOT restored into the sandbox: they ARE
+ *  the disk-swap addon itself, so restoring would recursively rebuild this very
+ *  addon inside its own DinD (heavy + pointless). Surfaced in the UI. */
+const SELF_ADDON_RE = /disk-swap/;
+
+/**
+ * Read a backup's manifest (backup.json) from its tar WITHOUT extracting the
+ * whole archive. Returns the addon slugs + folder list so the restore can be a
+ * TRUE full clone (Core + addons + folders), not Core-only. `restoreAddons`
+ * excludes the disk-swap addon itself; `skippedAddons` records what was left out
+ * so the UI can document it.
+ */
+async function readBackupManifest(
+  backupSlug: string,
+): Promise<{ restoreAddons: string[]; skippedAddons: string[]; folders: string[] }> {
+  const tar = `${DATA_MOUNT}/supervisor/backup/${backupSlug}.tar`;
+  try {
+    const json = (await $`tar -xf ${tar} ./backup.json -O`.nothrow().text()).trim();
+    const meta = JSON.parse(json);
+    const allAddons: string[] = Array.isArray(meta?.addons)
+      ? meta.addons.map((a: { slug?: string }) => a?.slug).filter((s: unknown): s is string => typeof s === "string")
+      : [];
+    const folders: string[] = Array.isArray(meta?.folders) ? meta.folders : [];
+    return {
+      restoreAddons: allAddons.filter((s) => !SELF_ADDON_RE.test(s)),
+      skippedAddons: allAddons.filter((s) => SELF_ADDON_RE.test(s)),
+      folders,
+    };
+  } catch {
+    return { restoreAddons: [], skippedAddons: [], folders: [] };
+  }
+}
+
 /**
  * Decide whether the mounted data partition already holds a FULLY RESTORED,
  * onboarded HA config — the marker used to fast-path past the ~20-min restore.
@@ -623,6 +656,28 @@ async function autoRestoreBackup(
   if (authOk) console.log("[sandbox] Inner-Supervisor auth path OK — hassio.local agent should be registered");
   else console.warn("[sandbox] Auth path still failing after wait — will attempt restore with HA Core restart fallback");
 
+  // Build a FULL-restore payload (TRUE clone): Core + database + all folders +
+  // every addon EXCEPT the disk-swap addon itself (see SELF_ADDON_RE). Without
+  // restore_addons/restore_folders the onboarding endpoint restores only the
+  // homeassistant folder — addons/folders/repos never come back.
+  const manifest = await readBackupManifest(backupSlug);
+  if (manifest.skippedAddons.length)
+    console.log(`[sandbox] Skipping self addon(s) (not cloned): ${manifest.skippedAddons.join(", ")}`);
+  console.log(
+    `[sandbox] Full restore → Core + db + folders [${manifest.folders.join(", ") || "none"}] + addons [${manifest.restoreAddons.join(", ") || "none"}]`,
+  );
+  // Schema (homeassistant/components/backup/onboarding.py): backup_id, agent_id,
+  // password?, restore_addons:[str], restore_database:bool, restore_folders:[Folder].
+  // restore_homeassistant is hardcoded True server-side — NOT a valid key (sending
+  // it 400s). Folder enum values match our strings (share, addons/local, ssl, media).
+  const restoreBody = JSON.stringify({
+    backup_id: backupSlug,
+    agent_id: "hassio.local",
+    restore_database: true,
+    ...(manifest.restoreAddons.length ? { restore_addons: manifest.restoreAddons } : {}),
+    ...(manifest.folders.length ? { restore_folders: manifest.folders } : {}),
+  });
+
   // Trigger restore via the onboarding API — no auth token required.
   // Retry up to 40× with a self-healing strategy:
   //   - transient 400-blocked/404/503 → wait and retry
@@ -638,7 +693,7 @@ async function autoRestoreBackup(
     res = await fetch(`${coreUrl}/api/onboarding/backup/restore`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ backup_id: backupSlug, agent_id: "hassio.local" }),
+      body: restoreBody,
       signal: AbortSignal.timeout(10_000),
     }).catch(() => null);
 
@@ -837,7 +892,13 @@ export async function runSandboxStage(
     // /run/docker.sock  — must be a socket/file; our inner dockerd listens on
     //                     /run/dind.sock, so symlink the standard path to it so the
     //                     Observer plugin can connect
-    await $`mkdir -p /run/dbus /run/supervisor`.nothrow().quiet();
+    // /var/log/journal + /run/log/journal — must be directories; journald addons
+    //                     (e.g. Advanced SSH & Web Terminal, host_network) bind-mount
+    //                     BOTH (Supervisor const SYSTEMD_JOURNAL_PERSISTENT +
+    //                     SYSTEMD_JOURNAL_VOLATILE). Missing on the DinD "host" → addon
+    //                     container create fails ("bind source path does not exist") →
+    //                     addon restore skipped → not a true clone.
+    await $`mkdir -p /run/dbus /run/supervisor /var/log/journal /run/log/journal`.nothrow().quiet();
     await $`sh -c '[ -d /etc/machine-id ] && rm -rf /etc/machine-id; true'`.nothrow().quiet();
     await Bun.write("/etc/machine-id", crypto.randomUUID().replace(/-/g, "") + "\n");
     await $`ln -sf ${DIND_SOCK} /run/docker.sock`.nothrow().quiet();

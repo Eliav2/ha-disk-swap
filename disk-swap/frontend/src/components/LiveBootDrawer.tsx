@@ -231,8 +231,13 @@ export function LiveBootDrawer() {
                     <p className="text-lg font-semibold">Backup restored & verified</p>
                     <p className="text-muted-foreground max-w-sm text-sm">
                       Home Assistant booted from the new disk with your configuration,
-                      automations, and history — and we confirmed it's fully set up
-                      (no onboarding). Have a look, then shut the sandbox down.
+                      automations, history, add-ons and folders — and we confirmed it's
+                      fully set up (no onboarding). Have a look, then shut the sandbox down.
+                    </p>
+                    <p className="text-muted-foreground/80 max-w-sm text-xs">
+                      Note: the Disk Swap add-on itself isn't restored into the sandbox
+                      (it can't run inside its own Live Boot) — it'll be there on your
+                      real Home Assistant after the swap.
                     </p>
                   </div>
                   <div className="flex gap-2">

@@ -20,11 +20,17 @@ udev: true
 
 # Linux capabilities needed for block device I/O (dd write)
 # and mount operations (inject stage).
+# SYS_TIME + SYS_NICE: required so the DinD sandbox can grant them to restored
+# inner add-ons that request them (e.g. Advanced SSH & Web Terminal). A container
+# can only pass capabilities to its children that it holds itself, so the outer
+# add-on must carry the union of caps any cloned add-on needs.
 privileged:
   - SYS_RAWIO
   - SYS_ADMIN
   - NET_ADMIN
   - SYS_RESOURCE
+  - SYS_TIME
+  - SYS_NICE
 
 # Ingress web UI
 ingress: true
