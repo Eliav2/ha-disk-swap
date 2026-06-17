@@ -1328,6 +1328,31 @@ export async function runSandboxStage(
     // Stop Supervisor container
     await $`docker -H unix://${DIND_SOCK} stop hassio_supervisor`.nothrow().quiet();
 
+    // CRITICAL: remove all inner containers + the hassio network so the target
+    // disk's shared Docker data-root boots CLEAN as a real machine. The sandbox
+    // creates containers (hassio_supervisor, homeassistant, add-ons) bound to the
+    // sandbox's namespaces/network; if they're left on disk, a real first boot
+    // (after the swap) inherits them broken — the Supervisor sticks in "Created"
+    // and HA OS drops to the emergency console ("HA CLI is not starting"). We KEEP
+    // the pulled images (the valuable pre-cache); only the container + network
+    // state is poison. HA OS recreates its own containers fresh on first boot.
+    await $`sh -c ${`for c in $(docker -H unix://${DIND_SOCK} ps -aq); do docker -H unix://${DIND_SOCK} rm -f "$c"; done`}`.nothrow().quiet();
+    await $`docker -H unix://${DIND_SOCK} network rm hassio`.nothrow().quiet();
+    console.log("[sandbox] Removed inner containers + hassio network (images kept) — target disk will boot clean");
+
+    // CRITICAL: remove the sandbox-polluted AppArmor profile dir. HA OS's
+    // /usr/libexec/hassos-apparmor only downloads the `hassio-supervisor` profile
+    // when /mnt/data/supervisor/apparmor is ABSENT; if the dir exists it just loads
+    // whatever profile FILES are inside. The sandbox leaves the dir present but
+    // containing only a `cache/` subdir (no `hassio-supervisor` file), so on a real
+    // first boot the download is skipped, no profile loads, and the Supervisor
+    // container fails to start ("unable to apply apparmor profile … no such file or
+    // directory") → restart-limit → emergency console. Removing the whole dir makes
+    // the first boot take the fresh-install path: re-download + load the profile.
+    // (Supervisor regenerates the per-add-on profiles itself when it starts them.)
+    await $`rm -rf /mnt/newsd/supervisor/apparmor`.nothrow().quiet();
+    console.log("[sandbox] Removed sandbox AppArmor dir — first boot will re-fetch hassio-supervisor profile");
+
     // Stop inner dockerd
     if (dockerdProc) {
       dockerdProc.kill("SIGTERM");
