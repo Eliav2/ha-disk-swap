@@ -139,7 +139,7 @@ async function preflight(
  * either the existing data partition's HA (if one was injected previously) or
  * a fresh onboarding screen.
  */
-export async function runSandboxOnlyPipeline(devicePath: string): Promise<Job> {
+export async function runSandboxOnlyPipeline(devicePath: string, noRestore = false): Promise<Job> {
   const device = await preflight(devicePath);
   if (!device.has_ha_os) {
     throw new Error(
@@ -169,8 +169,8 @@ export async function runSandboxOnlyPipeline(devicePath: string): Promise<Job> {
         machineName = info.machine;
       }
       checkCancelled();
-      console.log("[sandbox-only] Starting sandbox stage…");
-      await runSandboxStage_pipeline(devicePath);
+      console.log(`[sandbox-only] Starting sandbox stage…${noRestore ? " (no-restore boot)" : ""}`);
+      await runSandboxStage_pipeline(devicePath, noRestore);
       completeJob();
       console.log("[sandbox-only] Pipeline completed.");
     } catch (err) {
@@ -289,7 +289,7 @@ export async function runClonePipeline(
   return job;
 }
 
-async function runSandboxStage_pipeline(devicePath: string): Promise<void> {
+async function runSandboxStage_pipeline(devicePath: string, noRestore = false): Promise<void> {
   updateStage("sandbox", "in_progress", 0);
 
   if (isDev) {
@@ -324,7 +324,7 @@ async function runSandboxStage_pipeline(devicePath: string): Promise<void> {
   try {
     await runSandboxStage(devicePath, machineName, backupSlug, (percent, description) => {
       updateStage("sandbox", "in_progress", percent, undefined, undefined, description);
-    }, abortController!.signal);
+    }, abortController!.signal, noRestore);
     updateStage("sandbox", "completed", 100);
   } catch (err) {
     // If the user cancelled, let the outer pipeline handle it — clearJob() has

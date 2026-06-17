@@ -10,6 +10,8 @@ import { StageRow } from "@/components/StageRow";
 import { cancelClone, fetchLogs } from "@/lib/api";
 import { actions, appStore } from "@/store";
 import { useSystemInfo } from "@/hooks/use-system-info";
+import { useSandboxReady } from "@/hooks/use-sandbox-ready";
+import { useLiveDrawerState } from "@/routes";
 
 interface CloneProgressProps {
   device: Device;
@@ -19,6 +21,7 @@ interface CloneProgressProps {
 export function CloneProgress({ device, stages }: CloneProgressProps) {
   const [cancelling, setCancelling] = useState(false);
   const navigate = useNavigate();
+  const [, setLiveState] = useLiveDrawerState();
   const isJobDone = useStore(appStore, (s) => s.isJobDone);
   const { data: systemInfo } = useSystemInfo();
   const logsUrl = systemInfo?.addon_slug
@@ -28,9 +31,22 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
   const activeStage = stages.find((s) => s.status === "in_progress");
   const isWriting = activeStage?.name === "flash" || activeStage?.name === "inject";
   const hasFailed = stages.some((s) => s.status === "failed");
+
+  // The Live Boot row only becomes a clickable "Open" affordance once the inner
+  // HA proxy is actually reachable — not during the earlier image-pull/boot
+  // phases where opening the drawer would just show a "connecting" spinner.
+  const sandboxStage = stages.find((s) => s.name === "sandbox");
+  const sandboxReady = useSandboxReady(sandboxStage?.status === "in_progress");
   const isFinished = stages.every(
     (s) => s.status === "completed" || s.status === "failed",
   );
+  // The sandbox stage parks at progress 99 / status "in_progress" while the user
+  // inspects the inner HA (it only "completes" on Done), so `isFinished` never
+  // flips during sandbox_ready. Treat the terminal sandbox descriptions as done
+  // for polling — otherwise the log tail hammers /api/logs forever.
+  const sandboxDesc = sandboxStage?.description ?? "";
+  const sandboxTerminal =
+    sandboxDesc === "sandbox_ready" || sandboxDesc === "sandbox_restore_failed";
 
   // Sandbox-only mode: the only stage rendered is `sandbox`. Adjust the header
   // since nothing is being cloned. The Live Boot iframe lives in
@@ -40,7 +56,7 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
   const { data: logLines = [] } = useQuery({
     queryKey: ["logs"],
     queryFn: () => fetchLogs(3),
-    refetchInterval: isFinished ? false : 2000,
+    refetchInterval: isFinished || sandboxTerminal ? false : 2000,
     staleTime: 1000,
   });
 
@@ -95,7 +111,18 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
         </CardHeader>
         <CardContent className="space-y-4">
           {stages.map((stage) => (
-            <StageRow key={stage.name} stage={stage} logsUrl={logsUrl} />
+            <StageRow
+              key={stage.name}
+              stage={stage}
+              logsUrl={logsUrl}
+              // The Live Boot (sandbox) row opens the drawer — but only once the
+              // inner HA proxy is reachable, so "Open" doesn't show during boot.
+              onClick={
+                stage.name === "sandbox" && stage.status === "in_progress" && sandboxReady
+                  ? () => setLiveState("open")
+                  : undefined
+              }
+            />
           ))}
         </CardContent>
       </Card>

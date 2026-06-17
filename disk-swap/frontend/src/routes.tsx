@@ -102,7 +102,9 @@ function DeviceListPage() {
         actions.startSandboxOnly(device);
         navigate({ to: "/test/$device", params: { device: device.path } });
         try {
-          await startSandboxOnly(device.path);
+          // "Test Live Boot" is a fast sanity check: boot the cloned OS WITHOUT
+          // restoring (skips the ~20-min restore) — confirms the disk boots.
+          await startSandboxOnly(device.path, true);
         } catch {
           /* WS reports stage errors */
         }

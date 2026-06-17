@@ -34,11 +34,14 @@ export async function cancelClone(): Promise<void> {
   if (!res.ok) throw new Error(`Failed to cancel clone: ${res.status}`);
 }
 
-export async function startSandboxOnly(devicePath: string): Promise<void> {
+export async function startSandboxOnly(
+  devicePath: string,
+  noRestore = false,
+): Promise<void> {
   const res = await fetch("api/start-sandbox", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ device: devicePath }),
+    body: JSON.stringify({ device: devicePath, no_restore: noRestore }),
   });
   if (!res.ok) throw new Error(`Failed to start sandbox: ${res.status}`);
 }
