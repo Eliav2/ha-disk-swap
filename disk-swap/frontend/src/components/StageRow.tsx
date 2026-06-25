@@ -30,16 +30,40 @@ function formatEta(seconds: number): string {
   return parts ? `~${parts} left` : "";
 }
 
+/** Translate the sandbox stage's control tokens into user-facing text. */
+function friendlySandboxDesc(desc?: string): string | undefined {
+  if (!desc) return desc;
+  if (desc.startsWith("sandbox_status:")) return desc.slice("sandbox_status:".length);
+  switch (desc) {
+    case "sandbox_restoring":
+      return "Restoring your backup…";
+    case "sandbox_verifying":
+      return "Verifying the restore…";
+    case "sandbox_ready":
+      return "Restored & verified — open the Live Boot panel below";
+    case "sandbox_restore_failed":
+      return "Couldn't verify restore — open the Live Boot panel to restore manually";
+    default:
+      return desc;
+  }
+}
+
 interface StageRowProps {
   stage: StageState;
   logsUrl?: string;
+  /** When set, the whole row becomes a button that opens the Live Boot drawer. */
+  onClick?: () => void;
 }
 
-export function StageRow({ stage, logsUrl }: StageRowProps) {
+export function StageRow({ stage, logsUrl, onClick }: StageRowProps) {
   const eta = stage.status === "in_progress" && stage.eta ? formatEta(stage.eta) : null;
-  const hasEllipsis = stage.description?.endsWith("\u2026");
+  // The sandbox stage carries control tokens in `description` (consumed by the
+  // Live Boot drawer). Translate them to friendly text so they don't leak as raw
+  // "sandbox_*" strings into the stage row.
+  const friendlyDesc = friendlySandboxDesc(stage.description);
+  const hasEllipsis = friendlyDesc?.endsWith("\u2026");
   const dots = useAnimatedDots(stage.status === "in_progress" && !!hasEllipsis);
-  const description = hasEllipsis ? stage.description!.slice(0, -1) + dots : stage.description;
+  const description = hasEllipsis ? friendlyDesc!.slice(0, -1) + dots : friendlyDesc;
 
   const statusBadge = {
     pending: { variant: "secondary" as const, label: "Pending" },
@@ -49,7 +73,27 @@ export function StageRow({ stage, logsUrl }: StageRowProps) {
   }[stage.status];
 
   return (
-    <div className={cn("space-y-1.5", stage.status === "pending" && "opacity-50")}>
+    <div
+      className={cn(
+        "space-y-1.5",
+        stage.status === "pending" && "opacity-50",
+        onClick &&
+          "hover:bg-muted/50 -mx-2 cursor-pointer rounded-md px-2 py-1.5 transition-colors",
+      )}
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
+    >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium">{stage.label}</span>
@@ -58,13 +102,18 @@ export function StageRow({ stage, logsUrl }: StageRowProps) {
               Experimental
             </Badge>
           )}
+          {onClick && (
+            <span className="text-primary text-[11px] font-medium">
+              Open ↗
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {eta && (
             <span className="text-muted-foreground text-xs tabular-nums">{eta}</span>
           )}
           {stage.status === "failed" && logsUrl ? (
-            <a href={logsUrl} target="_top">
+            <a href={logsUrl} target="_top" onClick={(e) => e.stopPropagation()}>
               <Badge variant={statusBadge.variant} className="cursor-pointer hover:opacity-80">
                 {statusBadge.label} — view logs ↗
               </Badge>
@@ -84,6 +133,7 @@ export function StageRow({ stage, logsUrl }: StageRowProps) {
                 href={stage.link.url}
                 target="_blank"
                 rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
                 className="text-primary hover:underline inline-flex items-center gap-0.5"
               >
                 {stage.link.text}

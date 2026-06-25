@@ -48,6 +48,3 @@ export interface StageState {
 
 /** Clone job returned by GET api/jobs/current (matches shared Job) */
 export type Job = SharedJob;
-
-/** App screens */
-export type Screen = "device_select" | "backup_select" | "confirm" | "progress" | "complete";

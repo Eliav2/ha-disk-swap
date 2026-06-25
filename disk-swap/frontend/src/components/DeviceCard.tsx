@@ -44,7 +44,7 @@ export function DeviceCard({ device, selected, onSelect, onTestLiveBoot }: Devic
                 onTestLiveBoot();
               }}
               className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-1 text-xs underline-offset-2 hover:underline"
-              title="Boot the inner HA against this device's existing data partition — no clone, no flash."
+              title="Fast sanity check (~5 min): boot the cloned OS in the sandbox WITHOUT restoring a backup — confirms the disk boots. No clone, no flash, no restore."
             >
               <Rocket className="h-3 w-3" />
               Test Live Boot

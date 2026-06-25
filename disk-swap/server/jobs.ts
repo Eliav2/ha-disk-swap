@@ -1,7 +1,14 @@
-import { readFileSync, unlinkSync } from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import type { Device, Job, JobMode, StageName, StageState, StageStatus, WsMessage } from "../shared/types.ts";
 
-const JOB_FILE = "/data/current_job.json";
+// In the addon container /data is the persistent volume. In DEV mode
+// (running on a workstation) it doesn't exist; use a project-local dir so
+// persistence still works for testing rehydrate without flooding logs with
+// ENOENT errors.
+const JOB_FILE = process.env.DEV === "1" ? "./.dev-data/current_job.json" : "/data/current_job.json";
+if (process.env.DEV === "1") {
+  try { mkdirSync("./.dev-data", { recursive: true }); } catch { /* already exists */ }
+}
 
 /**
  * Rehydrate persisted job state on startup.

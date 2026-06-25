@@ -44,7 +44,10 @@ RUN ARCH=$(uname -m) && \
     rm -rf docker/
 
 # iptables required for dockerd bridge networking (prevents CoreDNS loop in DinD)
-RUN apk add --no-cache iptables
+# iproute2 provides the full `ip` (busybox's lacks `neigh replace … nud permanent`),
+# needed to pin the outer-gateway MAC so the sandbox's :8124 return path doesn't
+# black-hole when the gateway IP collides with the inner hassio bridge.
+RUN apk add --no-cache iptables iproute2
 
 # Install Bun runtime
 ARG BUN_VERSION=1.2.4

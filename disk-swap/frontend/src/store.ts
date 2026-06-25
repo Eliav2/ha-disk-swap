@@ -1,9 +1,9 @@
 import { Store } from "@tanstack/react-store";
-import type { BackupSelection, Device, Job, Screen, StageState, SystemInfoResponse } from "@/types";
+import type { BackupSelection, Device, Job, StageState, SystemInfoResponse } from "@/types";
 import { clearCurrentJob } from "@/lib/api";
 
+/** Non-navigation app state. Routing lives in the URL (see routes.tsx). */
 export interface AppState {
-  screen: Screen;
   selectedDevice: Device | null;
   selectedBackup: BackupSelection | null;
   backupName: string | null;
@@ -11,7 +11,13 @@ export interface AppState {
   sandboxEnabled: boolean;
   stages: StageState[];
   isJobDone: boolean;
-  /** True while the initial fetchCurrentJob check is in-flight (suppresses device_select flash). */
+  /** Latched true once the sandbox stage reports `sandbox_ready` — i.e. the
+   *  backup was restored AND verified into the cloned disk (Core + apps +
+   *  folders). Drives the post-clone copy: when true the swapped disk boots
+   *  straight into the fully-restored HA with no manual restore step. */
+  restoreConfirmed: boolean;
+  /** True while the initial fetchCurrentJob check is in-flight (suppresses
+   *  device-picker flash before a redirect to /clone). */
   isCheckingJob: boolean;
 }
 
@@ -23,7 +29,6 @@ const defaultStages: StageState[] = [
 ];
 
 export const appStore = new Store<AppState>({
-  screen: "device_select",
   selectedDevice: null,
   selectedBackup: null,
   backupName: null,
@@ -31,6 +36,7 @@ export const appStore = new Store<AppState>({
   sandboxEnabled: true,
   stages: defaultStages,
   isJobDone: false,
+  restoreConfirmed: false,
   isCheckingJob: true,
 });
 
@@ -94,7 +100,7 @@ function buildStages(
     {
       name: "inject",
       label: "Inject backup",
-      description: "Copies backup to the new device for automatic restore on first boot.",
+      description: "Copies your backup onto the new device so it can be restored.",
       status: "pending",
       progress: 0,
     },
@@ -114,26 +120,24 @@ export const actions = {
     appStore.setState((s) => ({ ...s, selectedDevice: device }));
   },
 
-  /** From device_select, go directly to backup_select. The confirm dialog is now
-   * the LAST step (after toggles are chosen) so its copy can be accurate. */
-  next() {
+  /** Called when navigating into /setup/$device. Defaults skipFlash based on
+   *  whether the device already has HA OS; the user can still flip it on the
+   *  setup page's Reflash switch. */
+  prepareSetup() {
     appStore.setState((s) => ({
       ...s,
-      screen: "backup_select" as const,
-      // Default skipFlash based on whether the device already has HA OS — the
-      // user can still flip it from the Reflash switch on backup_select.
       skipFlash: s.selectedDevice?.has_ha_os ?? false,
     }));
   },
 
-  /** From backup_select, open the final confirm dialog. */
-  openConfirm() {
-    appStore.setState((s) => ({ ...s, screen: "confirm" as const }));
-  },
-
-  /** Cancel the confirm dialog — return to backup_select to allow toggling. */
-  closeConfirm() {
-    appStore.setState((s) => ({ ...s, screen: "backup_select" as const }));
+  /** Called when navigating from /setup back to /. Clears setup choices. */
+  resetSetup() {
+    appStore.setState((s) => ({
+      ...s,
+      selectedBackup: null,
+      skipFlash: false,
+      sandboxEnabled: true,
+    }));
   },
 
   selectBackup(backup: BackupSelection) {
@@ -148,74 +152,57 @@ export const actions = {
     appStore.setState((s) => ({ ...s, sandboxEnabled: enabled }));
   },
 
-  /** Start the pipeline after backup is selected. */
+  /** Initialize stage list + reset isJobDone before kicking off the clone API call. */
   startClone(systemInfo?: SystemInfoResponse | null) {
     appStore.setState((s) => {
       const backup = s.selectedBackup ?? { type: "new" as const };
       return {
         ...s,
-        screen: "progress" as const,
         isJobDone: false,
+        restoreConfirmed: false,
         stages: buildStages(backup, systemInfo, s.skipFlash, s.sandboxEnabled),
       };
     });
   },
 
-  /** Sandbox-only test mode: jumps straight to the progress screen with only the
-   *  sandbox stage. No backup/download/flash/inject. Triggered from the device
-   *  card's "Test Live Boot" link when the device already has HA OS. */
+  /** Sandbox-only test mode: bind the device, build a single-stage view, and
+   *  let the caller navigate to /test/$device. */
   startSandboxOnly(device: Device) {
     appStore.setState(() => ({
-      screen: "progress" as const,
       selectedDevice: device,
       selectedBackup: null,
       backupName: null,
       skipFlash: false,
       sandboxEnabled: true,
       isJobDone: false,
+      restoreConfirmed: false,
       isCheckingJob: false,
       stages: buildStages({ type: "new" }, null, false, true, "sandbox_only"),
-    }));
-  },
-
-  /** Go back from backup_select to device_select. */
-  backToDeviceSelect() {
-    appStore.setState((s) => ({
-      ...s,
-      screen: "device_select" as const,
-      selectedBackup: null,
-      skipFlash: false,
-      sandboxEnabled: true,
     }));
   },
 
   updateStage(stageName: string, status: StageState["status"], progress: number, speed?: number, eta?: number, description?: string) {
     appStore.setState((s) => ({
       ...s,
+      // Latch restoreConfirmed the moment the sandbox verifies the restore.
+      // Stays true even after the description later flips to "Shutting down…".
+      restoreConfirmed:
+        description === "sandbox_ready" ? true : s.restoreConfirmed,
       stages: s.stages.map((st) =>
         st.name === stageName ? { ...st, status, progress, speed, eta, ...(description != null && { description }) } : st
       ),
     }));
   },
 
-  /** Called once the initial fetchCurrentJob check completes (success or failure). */
   doneCheckingJob() {
     appStore.setState((s) => ({ ...s, isCheckingJob: false }));
   },
 
-  /** Called when the WS "done" message arrives — marks job finished without navigating. */
+  /** WS "done" message arrived — pipeline is finished. */
   finishJob(backupName?: string | null) {
     appStore.setState((s) => ({
       ...s,
       isJobDone: true,
-      backupName: backupName ?? s.backupName,
-    }));
-  },
-
-  complete(backupName?: string | null) {
-    appStore.setState((s) => ({
-      ...s,
-      screen: "complete" as const,
       backupName: backupName ?? s.backupName,
     }));
   },
@@ -238,7 +225,6 @@ export const actions = {
     });
 
     appStore.setState(() => ({
-      screen: "progress" as const,
       selectedDevice: job.device,
       selectedBackup: null,
       backupName: job.backupName,
@@ -246,6 +232,7 @@ export const actions = {
       sandboxEnabled,
       stages,
       isJobDone: isCompleted,
+      restoreConfirmed: job.stages.sandbox?.description === "sandbox_ready",
       isCheckingJob: false,
     }));
   },
@@ -253,7 +240,6 @@ export const actions = {
   reset() {
     clearCurrentJob().catch(() => {});
     appStore.setState(() => ({
-      screen: "device_select" as const,
       selectedDevice: null,
       selectedBackup: null,
       backupName: null,
@@ -261,6 +247,7 @@ export const actions = {
       sandboxEnabled: true,
       stages: defaultStages.map((st) => ({ ...st })),
       isJobDone: false,
+      restoreConfirmed: false,
       isCheckingJob: false,
     }));
   },

@@ -1,14 +1,17 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useStore } from "@tanstack/react-store";
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import type { Device, StageState } from "@/types";
 import { ExternalLink } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StageRow } from "@/components/StageRow";
-import { cancelClone, signalSandboxDone, fetchLogs, fetchSandboxReady } from "@/lib/api";
+import { cancelClone, clearCurrentJob, signalSandboxDone, fetchLogs } from "@/lib/api";
 import { actions, appStore } from "@/store";
 import { useSystemInfo } from "@/hooks/use-system-info";
+import { useSandboxReady } from "@/hooks/use-sandbox-ready";
+import { useLiveDrawerState } from "@/routes";
 
 interface CloneProgressProps {
   device: Device;
@@ -17,10 +20,9 @@ interface CloneProgressProps {
 
 export function CloneProgress({ device, stages }: CloneProgressProps) {
   const [cancelling, setCancelling] = useState(false);
-  const [sandboxDone, setSandboxDone] = useState(false);
-  const [sandboxReachable, setSandboxReachable] = useState(false);
+  const navigate = useNavigate();
+  const [, setLiveState] = useLiveDrawerState();
   const isJobDone = useStore(appStore, (s) => s.isJobDone);
-  const backupName = useStore(appStore, (s) => s.backupName);
   const { data: systemInfo } = useSystemInfo();
   const logsUrl = systemInfo?.addon_slug
     ? `/config/app/${systemInfo.addon_slug}/logs`
@@ -29,52 +31,32 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
   const activeStage = stages.find((s) => s.status === "in_progress");
   const isWriting = activeStage?.name === "flash" || activeStage?.name === "inject";
   const hasFailed = stages.some((s) => s.status === "failed");
+
+  // The Live Boot row only becomes a clickable "Open" affordance once the inner
+  // HA proxy is actually reachable — not during the earlier image-pull/boot
+  // phases where opening the drawer would just show a "connecting" spinner.
+  const sandboxStage = stages.find((s) => s.name === "sandbox");
+  const sandboxReady = useSandboxReady(sandboxStage?.status === "in_progress");
   const isFinished = stages.every(
     (s) => s.status === "completed" || s.status === "failed",
   );
+  // The sandbox stage parks at progress 99 / status "in_progress" while the user
+  // inspects the inner HA (it only "completes" on Done), so `isFinished` never
+  // flips during sandbox_ready. Treat the terminal sandbox descriptions as done
+  // for polling — otherwise the log tail hammers /api/logs forever.
+  const sandboxDesc = sandboxStage?.description ?? "";
+  const sandboxTerminal =
+    sandboxDesc === "sandbox_ready" || sandboxDesc === "sandbox_restore_failed";
 
-  // Sandbox-only mode: the only stage rendered is `sandbox`. Adjust the page
-  // header so users in test-mode don't see "Cloning…" — nothing is being cloned.
+  // Sandbox-only mode: the only stage rendered is `sandbox`. Adjust the header
+  // since nothing is being cloned. The Live Boot iframe lives in
+  // <LiveBootDrawer /> at the app root — not in this view.
   const isSandboxOnly = stages.length === 1 && stages[0].name === "sandbox";
-
-  const sandboxStage = stages.find((s) => s.name === "sandbox");
-  const sandboxDesc = sandboxStage?.status === "in_progress" ? (sandboxStage.description ?? "") : "";
-  // Parse sandbox_status:message descriptions for the status bar
-  const sandboxStatusMsg = sandboxDesc.startsWith("sandbox_status:") ? sandboxDesc.slice(15) : null;
-  // Show the sandbox panel once the proxy is up (sandbox_status:*, restoring, done, or failed)
-  const isSandboxVisible = sandboxStage?.status === "in_progress" &&
-    (sandboxStatusMsg != null || sandboxDesc === "sandbox_ready" || sandboxDesc === "sandbox_restoring" || sandboxDesc === "sandbox_restore_failed");
-  const isSandboxRestoreFailed = sandboxDesc === "sandbox_restore_failed";
-  const isSandboxReady = sandboxDesc === "sandbox_ready" || isSandboxRestoreFailed;
-  const isSandboxRestoring = sandboxDesc === "sandbox_restoring";
-  const isSandboxLoading = sandboxStatusMsg != null;
-
-  const sandboxUrl = `http://${window.location.hostname}:8124/`;
-
-  // Same-origin readiness probe — asks the addon backend whether the sandbox
-  // proxy is wired up. Replaced the previous cross-origin `:8124/` probe which
-  // suffered from (a) variable inner-HA response times triggering aborts and
-  // (b) Chrome's negative-cache holding `ERR_ADDRESS_UNREACHABLE` open for
-  // ~30s whenever the macOS↔UTM bridge briefly drops connectivity.
-  useEffect(() => {
-    if (!isSandboxVisible || sandboxReachable) return;
-    let cancelled = false;
-    const probe = async () => {
-      const ready = await fetchSandboxReady();
-      if (!cancelled && ready) setSandboxReachable(true);
-    };
-    probe();
-    const id = setInterval(probe, 2000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [isSandboxVisible, sandboxReachable]);
 
   const { data: logLines = [] } = useQuery({
     queryKey: ["logs"],
     queryFn: () => fetchLogs(3),
-    refetchInterval: isFinished ? false : 2000,
+    refetchInterval: isFinished || sandboxTerminal ? false : 2000,
     staleTime: 1000,
   });
 
@@ -83,15 +65,36 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
     try {
       await cancelClone();
       actions.reset();
+      navigate({ to: "/" });
     } catch {
       setCancelling(false);
     }
   }
 
-  async function handleSandboxDone() {
-    setSandboxDone(true);
-    await signalSandboxDone();
+  // Universal escape hatch for any terminal state (finished, sandbox_ready,
+  // failed). Clears the PERSISTED job so a refresh doesn't re-trap the UI on a
+  // completed run, and tells a still-live sandbox to tear down. Without this a
+  // completed sandbox-only job leaves the view with no button at all.
+  async function handleDiscard() {
+    setCancelling(true);
+    try {
+      if (isSandboxOnly) await signalSandboxDone();
+    } catch {
+      /* sandbox may already be gone — ignore */
+    }
+    try {
+      await clearCurrentJob();
+    } catch {
+      /* clearing is best-effort */
+    }
+    actions.reset();
+    navigate({ to: "/" });
   }
+
+  // A finished/terminal run that ISN'T the clone→swap success path (which has
+  // its own "Next" button) must still offer a way back to the start.
+  const isTerminal = isFinished || sandboxTerminal || hasFailed;
+  const showDiscard = isTerminal && !(isJobDone && !isSandboxOnly);
 
   return (
     <div className="space-y-6">
@@ -133,74 +136,23 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
         </CardHeader>
         <CardContent className="space-y-4">
           {stages.map((stage) => (
-            <StageRow key={stage.name} stage={stage} logsUrl={logsUrl} />
+            <StageRow
+              key={stage.name}
+              stage={stage}
+              logsUrl={logsUrl}
+              // The Live Boot (sandbox) row opens the drawer — but only once the
+              // inner HA proxy is reachable, so "Open" doesn't show during boot.
+              onClick={
+                stage.name === "sandbox" && stage.status === "in_progress" && sandboxReady
+                  ? () => setLiveState("open")
+                  : undefined
+              }
+            />
           ))}
         </CardContent>
       </Card>
 
-      {isSandboxVisible && (
-        <Card>
-          <CardHeader>
-            <CardTitle>
-              {isSandboxOnly ? "Inner HA Core" : "Your new HA OS is running in parallel"}
-            </CardTitle>
-            <CardDescription>
-              {isSandboxLoading
-                ? sandboxStatusMsg
-                : isSandboxRestoring
-                  ? "Your backup is being restored automatically. The instance will restart momentarily."
-                  : isSandboxOnly
-                    ? "Test instance booted against the device's existing data partition. Click Done to shut it down. The inner HA is fully isolated — it cannot control your devices."
-                    : "Verify everything looks correct, then click Done to proceed with the disk swap. This instance is fully isolated — it cannot control your devices."}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            <div className="relative w-full rounded-md overflow-hidden border" style={{ height: "600px" }}>
-              {sandboxReachable ? (
-                <iframe
-                  src={sandboxUrl}
-                  className="w-full h-full"
-                  title="Home Assistant (new disk)"
-                  sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
-                />
-              ) : (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-muted">
-                  <div className="h-8 w-8 rounded-full border-4 border-primary border-t-transparent animate-spin" />
-                  <p className="text-sm text-muted-foreground">Connecting to sandbox instance…</p>
-                </div>
-              )}
-              {(isSandboxLoading || isSandboxRestoring) && sandboxReachable && (
-                <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3">
-                  <div className="h-8 w-8 rounded-full border-4 border-primary border-t-transparent animate-spin" />
-                  <p className="text-sm font-medium">{isSandboxLoading ? sandboxStatusMsg : "Restoring your backup…"}</p>
-                </div>
-              )}
-            </div>
-            {isSandboxRestoreFailed && (
-              <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive space-y-1">
-                <p className="font-medium">Auto-restore failed — please restore manually:</p>
-                <ol className="list-decimal list-inside space-y-0.5 text-destructive/90">
-                  <li>Complete onboarding in the panel above</li>
-                  <li>Go to <strong>Settings → System → Backups</strong></li>
-                  <li>Select your backup and click <strong>Restore</strong></li>
-                  <li>Once restored, click the button below</li>
-                </ol>
-              </div>
-            )}
-            {isSandboxReady && (
-              <Button
-                className="w-full"
-                disabled={sandboxDone}
-                onClick={handleSandboxDone}
-              >
-                {sandboxDone ? "Shutting down…" : "Done — Ready to Swap Disk"}
-              </Button>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {!isFinished && !isSandboxReady && !hasFailed && (
+      {!isTerminal && (
         <>
           <Button
             variant="outline"
@@ -215,27 +167,33 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
                 : "Cancel"}
           </Button>
           <p className="text-muted-foreground text-center text-xs">
-            You can safely navigate away — cloning continues in the background.
+            You can safely navigate away — {isSandboxOnly ? "the test runs" : "cloning continues"} in the background.
           </p>
         </>
       )}
 
-      {isJobDone && (
-        <Button
-          className="w-full"
-          onClick={() => actions.complete(backupName)}
-        >
-          Next
+      {isJobDone && !isSandboxOnly && (
+        <Button className="w-full" onClick={() => navigate({ to: "/swap" })}>
+          Next — Swap instructions
         </Button>
       )}
 
-      {hasFailed && !isJobDone && (
+      {/* Universal escape from any terminal state (sandbox done, finished, or
+          failed). Always clears the persisted job so a refresh can't re-trap. */}
+      {showDiscard && (
         <Button
-          variant="outline"
+          variant={hasFailed ? "outline" : "default"}
           className="w-full"
-          onClick={actions.reset}
+          disabled={cancelling}
+          onClick={handleDiscard}
         >
-          Start Over
+          {cancelling
+            ? "Closing…"
+            : isSandboxOnly
+              ? "Done — Close test"
+              : hasFailed
+                ? "Start Over"
+                : "Done"}
         </Button>
       )}
     </div>
