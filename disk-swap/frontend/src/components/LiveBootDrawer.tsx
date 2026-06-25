@@ -235,9 +235,9 @@ export function LiveBootDrawer() {
                       fully set up (no onboarding). Have a look, then shut the sandbox down.
                     </p>
                     <p className="text-muted-foreground/80 max-w-sm text-xs">
-                      Note: the Disk Swap add-on itself isn't restored into the sandbox
-                      (it can't run inside its own Live Boot) — it'll be there on your
-                      real Home Assistant after the swap.
+                      Note: the Disk Swap add-on itself is intentionally skipped during
+                      restore — restoring it would recursively rebuild this add-on inside
+                      its own sandbox. Reinstall it from the add-on store after the swap.
                     </p>
                   </div>
                   <div className="flex gap-2">
