@@ -17,7 +17,7 @@ import { useCloneProgress } from "@/hooks/use-clone-progress";
 import { useSystemInfo } from "@/hooks/use-system-info";
 import { useImageCache } from "@/hooks/use-image-cache";
 import { useDevices } from "@/hooks/use-devices";
-import { fetchCurrentJob, startClone, startSandboxOnly } from "@/lib/api";
+import { fetchCurrentJob, clearCurrentJob, startClone, startSandboxOnly } from "@/lib/api";
 import { DeviceList } from "@/components/DeviceList";
 import { BackupSelect } from "@/components/BackupSelect";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -75,10 +75,16 @@ function DeviceListPage() {
   useEffect(() => {
     fetchCurrentJob()
       .then((job) => {
-        if (job) {
+        // Only resume a job that's still running. A persisted terminal job
+        // (completed/failed — e.g. a finished sandbox-only Live Boot test) must
+        // NOT route into the progress view: that view has no follow-up for it
+        // and the user would be trapped with no way to start a new clone. Clear
+        // the stale record and fall back to the device picker instead.
+        if (job && job.status === "in_progress") {
           actions.resumeJob(job, systemInfo ?? null);
           navigate({ to: job.mode === "sandbox_only" ? "/test/$device" : "/clone", params: { device: job.device.path } });
         } else {
+          if (job) clearCurrentJob().catch(() => {});
           actions.doneCheckingJob();
         }
       })

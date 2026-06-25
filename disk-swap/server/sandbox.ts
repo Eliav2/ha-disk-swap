@@ -31,6 +31,116 @@ async function imageExists(image: string): Promise<boolean> {
   return res.exitCode === 0;
 }
 
+interface PullProgress {
+  /** Bytes downloaded so far across all layers. */
+  downloaded: number;
+  /** Total bytes to download across all layers (0 until known). */
+  total: number;
+  /** 0–100 download percentage. */
+  pct: number;
+  /** Instantaneous download speed in bytes/sec. */
+  speed: number;
+}
+
+/** Human-readable transfer rate, e.g. "8.3 MB/s". */
+function fmtSpeed(bytesPerSec: number): string {
+  if (bytesPerSec >= 1e6) return `${(bytesPerSec / 1e6).toFixed(1)} MB/s`;
+  if (bytesPerSec >= 1e3) return `${Math.round(bytesPerSec / 1e3)} KB/s`;
+  return `${Math.max(0, Math.round(bytesPerSec))} B/s`;
+}
+
+/** Split "ghcr.io/foo/bar:tag" into {fromImage, tag} for the Docker API. */
+function splitImageRef(image: string): { fromImage: string; tag: string } {
+  const lastColon = image.lastIndexOf(":");
+  const lastSlash = image.lastIndexOf("/");
+  // A colon after the last slash is a tag separator (registry-port colons sit
+  // before the first slash, so lastColon > lastSlash reliably means a tag).
+  if (lastColon > lastSlash) {
+    return { fromImage: image.slice(0, lastColon), tag: image.slice(lastColon + 1) };
+  }
+  return { fromImage: image, tag: "latest" };
+}
+
+/**
+ * Pull via the Docker Engine API (`POST /images/create`) over the DinD unix
+ * socket, streaming the newline-JSON progress so we can surface download % and
+ * speed. The daemon performs the actual registry pull (same auth/anonymous path
+ * as the CLI), so this is equivalent to `docker pull` but observable.
+ *
+ * Only DOWNLOAD bytes feed the rate — extraction events are ignored, so the
+ * speed reflects network throughput. Throws on stream error (caller falls back
+ * to the CLI pull).
+ */
+async function pullImageStream(image: string, onProgress?: (p: PullProgress) => void): Promise<void> {
+  const { fromImage, tag } = splitImageRef(image);
+  const url = `http://localhost/images/create?fromImage=${encodeURIComponent(fromImage)}&tag=${encodeURIComponent(tag)}`;
+  // Bun's fetch speaks HTTP over a unix socket via the `unix` option.
+  const res = await fetch(url, { method: "POST", unix: DIND_SOCK } as RequestInit & { unix: string });
+  if (!res.ok || !res.body) throw new Error(`images/create HTTP ${res.status}`);
+
+  const layers = new Map<string, { current: number; total: number }>();
+  let lastSum = 0;
+  let lastTime = Date.now();
+  let lastEmit = 0;
+  let errored: string | null = null;
+  const decoder = new TextDecoder();
+  let buf = "";
+
+  for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+    buf += decoder.decode(chunk, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let ev: any;
+      try {
+        ev = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (ev.error) {
+        errored = String(ev.error);
+        continue;
+      }
+      const id = ev.id as string | undefined;
+      const pd = ev.progressDetail;
+      // Track only the download phase; once a layer is downloaded, pin it to its
+      // total so the running sum doesn't drop when its events stop.
+      if (id && ev.status === "Downloading" && pd && typeof pd.total === "number" && pd.total > 0) {
+        layers.set(id, { current: typeof pd.current === "number" ? pd.current : 0, total: pd.total });
+      } else if (id && ev.status === "Download complete" && layers.has(id)) {
+        const l = layers.get(id)!;
+        l.current = l.total;
+      }
+
+      const now = Date.now();
+      if (onProgress && now - lastEmit >= 700) {
+        let sumC = 0;
+        let sumT = 0;
+        for (const l of layers.values()) {
+          sumC += l.current;
+          sumT += l.total;
+        }
+        const dt = (now - lastTime) / 1000;
+        const speed = dt > 0 ? (sumC - lastSum) / dt : 0;
+        lastSum = sumC;
+        lastTime = now;
+        lastEmit = now;
+        if (sumT > 0) {
+          onProgress({
+            downloaded: sumC,
+            total: sumT,
+            pct: Math.min(100, Math.round((sumC / sumT) * 100)),
+            speed: Math.max(0, speed),
+          });
+        }
+      }
+    }
+  }
+  if (errored) throw new Error(`pull error: ${errored}`);
+}
+
 /**
  * Pull an image, tolerant of flaky external DNS / registry reachability.
  *
@@ -44,11 +154,22 @@ async function imageExists(image: string): Promise<boolean> {
  *   - if all pulls fail but the image is cached locally, fall back to the cache.
  * Throws only when the image is neither pullable nor cached.
  */
-async function pullImage(image: string, opts: { skipIfPresent?: boolean; attempts?: number } = {}): Promise<void> {
-  const { skipIfPresent = true, attempts = 3 } = opts;
+async function pullImage(
+  image: string,
+  opts: { skipIfPresent?: boolean; attempts?: number; onProgress?: (p: PullProgress) => void } = {},
+): Promise<void> {
+  const { skipIfPresent = true, attempts = 3, onProgress } = opts;
   if (skipIfPresent && (await imageExists(image))) {
     console.log(`[sandbox] Using cached image ${image} (skipping pull)`);
     return;
+  }
+  // Preferred path: stream the Docker API so we can report download % + speed.
+  // If anything about the stream fails, fall through to the robust CLI pull.
+  try {
+    await pullImageStream(image, onProgress);
+    if (await imageExists(image)) return;
+  } catch (err) {
+    console.warn(`[sandbox] Streaming pull of ${image} failed, falling back to docker pull: ${err}`);
   }
   for (let i = 1; i <= attempts; i++) {
     const res = await $`docker -H unix://${DIND_SOCK} pull ${image}`.nothrow();
@@ -974,7 +1095,9 @@ export async function runSandboxStage(
     //    Pulling first ensures we have the image locally before the route exists.
     progressCb(15, "Pulling HA Supervisor image…");
     const supervisorImage = await getSupervisorImage();
-    await pullImage(supervisorImage);
+    await pullImage(supervisorImage, {
+      onProgress: (p) => progressCb(15, `Pulling HA Supervisor image… ${p.pct}% (${fmtSpeed(p.speed)})`),
+    });
     console.log("[sandbox] Supervisor image ready");
 
     // Pre-pull ALL images the Supervisor needs while DNS still works
@@ -1015,13 +1138,24 @@ export async function runSandboxStage(
         .filter((img): img is string => img != null);
 
       const allImages = [...coreImages, ...pluginImages];
+      const span = 15 / allImages.length; // progress-bar width per image (15→30)
       for (let i = 0; i < allImages.length; i++) {
         const img = allImages[i];
         const label = img.split("/").pop() ?? img;
-        progressCb(15 + Math.round((i / allImages.length) * 15), `Pulling ${label}…`);
+        const base = 15 + Math.round((i / allImages.length) * 15);
+        progressCb(base, `Pulling ${label}…`);
         console.log("[sandbox] Pre-pulling:", img);
         // Non-fatal pre-pull: skip if cached, retry transient registry blips.
-        await pullImage(img, { attempts: 2 }).catch((e) =>
+        // onProgress streams download % + speed into the stage description and
+        // advances the bar within this image's slice of the 15→30 range.
+        await pullImage(img, {
+          attempts: 2,
+          onProgress: (p) =>
+            progressCb(
+              base + Math.round((p.pct / 100) * span),
+              `Pulling ${label}… ${p.pct}% (${fmtSpeed(p.speed)})`,
+            ),
+        }).catch((e) =>
           console.warn(`[sandbox] Pre-pull of ${img} failed (non-fatal):`, String(e)),
         );
       }

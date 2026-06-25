@@ -7,7 +7,7 @@ import { ExternalLink } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StageRow } from "@/components/StageRow";
-import { cancelClone, fetchLogs } from "@/lib/api";
+import { cancelClone, clearCurrentJob, signalSandboxDone, fetchLogs } from "@/lib/api";
 import { actions, appStore } from "@/store";
 import { useSystemInfo } from "@/hooks/use-system-info";
 import { useSandboxReady } from "@/hooks/use-sandbox-ready";
@@ -71,6 +71,31 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
     }
   }
 
+  // Universal escape hatch for any terminal state (finished, sandbox_ready,
+  // failed). Clears the PERSISTED job so a refresh doesn't re-trap the UI on a
+  // completed run, and tells a still-live sandbox to tear down. Without this a
+  // completed sandbox-only job leaves the view with no button at all.
+  async function handleDiscard() {
+    setCancelling(true);
+    try {
+      if (isSandboxOnly) await signalSandboxDone();
+    } catch {
+      /* sandbox may already be gone — ignore */
+    }
+    try {
+      await clearCurrentJob();
+    } catch {
+      /* clearing is best-effort */
+    }
+    actions.reset();
+    navigate({ to: "/" });
+  }
+
+  // A finished/terminal run that ISN'T the clone→swap success path (which has
+  // its own "Next" button) must still offer a way back to the start.
+  const isTerminal = isFinished || sandboxTerminal || hasFailed;
+  const showDiscard = isTerminal && !(isJobDone && !isSandboxOnly);
+
   return (
     <div className="space-y-6">
       <div>
@@ -127,7 +152,7 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
         </CardContent>
       </Card>
 
-      {!isFinished && !hasFailed && (
+      {!isTerminal && (
         <>
           <Button
             variant="outline"
@@ -153,16 +178,22 @@ export function CloneProgress({ device, stages }: CloneProgressProps) {
         </Button>
       )}
 
-      {hasFailed && !isJobDone && (
+      {/* Universal escape from any terminal state (sandbox done, finished, or
+          failed). Always clears the persisted job so a refresh can't re-trap. */}
+      {showDiscard && (
         <Button
-          variant="outline"
+          variant={hasFailed ? "outline" : "default"}
           className="w-full"
-          onClick={() => {
-            actions.reset();
-            navigate({ to: "/" });
-          }}
+          disabled={cancelling}
+          onClick={handleDiscard}
         >
-          Start Over
+          {cancelling
+            ? "Closing…"
+            : isSandboxOnly
+              ? "Done — Close test"
+              : hasFailed
+                ? "Start Over"
+                : "Done"}
         </Button>
       )}
     </div>
