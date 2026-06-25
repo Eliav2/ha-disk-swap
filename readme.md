@@ -58,7 +58,7 @@ And the cloned disk it produces boots **clean, on its own**, straight into your 
 
 Swap the disk and it boots straight into your fully-restored Home Assistant.
 
-> One exception: the Disk Swap add-on itself is intentionally skipped during the Live Boot restore — restoring it would recursively rebuild this very add-on inside its own sandbox (heavy and pointless). Reinstall it from the add-on store afterwards if you want it on the cloned machine.
+> One exception: the Disk Swap add-on itself is intentionally skipped during the Live Boot restore — there's no point reinstalling the cloning tool into the temporary verification sandbox. As a result it isn't on the cloned disk; reinstall it from the add-on store afterwards if you want it on the cloned machine.
 
 **Without Live Boot:** the backup is injected onto the disk; on first boot, choose *Restore from backup* on the welcome screen to bring everything back.
 
