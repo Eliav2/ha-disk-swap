@@ -235,9 +235,8 @@ export function LiveBootDrawer() {
                       fully set up (no onboarding). Have a look, then shut the sandbox down.
                     </p>
                     <p className="text-muted-foreground/80 max-w-sm text-xs">
-                      Note: the Disk Swap add-on itself is skipped during restore — no point
-                      reinstalling the cloning tool into this temporary sandbox. It won't be
-                      on the cloned disk; reinstall it from the add-on store after the swap.
+                      Note: the Disk Swap add-on itself isn't in the clone (by design) —
+                      reinstall it from the add-on store after the swap.
                     </p>
                   </div>
                   <div className="flex gap-2">
