@@ -458,13 +458,19 @@ async function waitForDockerd(timeoutMs: number): Promise<void> {
  * Poll supervisor logs until it reports RUNNING state (up to 25 min).
  *
  * `progressCb` (optional) is called every ~10s with a (percent, description) tuple
- * so the UI can show meaningful state during the long wait — see
- * STARTUP_API_RESPONSE_TIMEOUT in HA Supervisor: in onboarding mode the
- * Supervisor needs ~2 × 10-min cycles before transitioning to RUNNING because
- * `hassio` integration is absent and `is_connected()` always fails. We detect
- * which cycle we're in by counting the "Can't start Home Assistant Core" log
- * lines (Supervisor's own typo: "rebuiling") and linearly bump the progress
- * percent between 85 and 95 so the bar visibly moves.
+ * so the UI can show meaningful state during the wait.
+ *
+ * Historically this took ~2 × 10-min STARTUP_API_RESPONSE_TIMEOUT cycles. Root
+ * cause (verified against Supervisor source, NOT "hassio absent in onboarding" as
+ * an earlier comment claimed): Supervisor confirms Core is RUNNING over a no-auth
+ * unix socket SOCKET_CORE=/run/os/core.sock when Core >= 2026.4. The Supervisor
+ * container must have `-v /run/supervisor:/run/os` for that path to resolve to the
+ * file Core writes (see the supervisor run command). Without that mount the socket
+ * is dead, Supervisor falls back to the authed network API it can't satisfy before
+ * onboarding, and only reaches RUNNING after two 10-min timeouts. With the mount in
+ * place RUNNING appears in seconds and this loop returns almost immediately. The
+ * cycle counter (counting "Can't start Home Assistant Core" — Supervisor's own typo
+ * "rebuiling") only matters in the legacy slow path.
  */
 async function waitForSupervisorRunning(
   signal: AbortSignal,
@@ -1271,7 +1277,18 @@ export async function runSandboxStage(
       -v ${DIND_SOCK}:/run/docker.sock:rw \
       -v /mnt/newsd/supervisor:/data:rw \
       -v /etc/machine-id:/etc/machine-id:ro \
+      -v /run/supervisor:/run/os:rw \
       ${supervisorImage}`;
+    // ^ -v /run/supervisor:/run/os — this is what kills the ~20-min onboarding
+    // wait. Supervisor confirms HA Core is RUNNING over a no-auth unix socket
+    // SOCKET_CORE=/run/os/core.sock (Core >= 2026.4). It bind-mounts /run/supervisor
+    // into Core (MOUNT_CORE_RUN) where Core writes core.sock, and reads it back at
+    // /run/os/core.sock — so Supervisor needs /run/os to map to the SAME host dir
+    // (/run/supervisor). Real HA OS's hassos-supervisor.service has this exact mount.
+    // Without it the socket path is dead, Supervisor falls back to the authed network
+    // API which it can't satisfy pre-onboarding, and only escapes via 2 x 10-min
+    // STARTUP_API_RESPONSE_TIMEOUT cycles before declaring RUNNING. With the socket
+    // there's no auth, so onboarding state is irrelevant and RUNNING is seen in seconds.
     console.log("[sandbox] Supervisor container started");
 
     // Now that the Supervisor has joined the hassio network, Docker has assigned

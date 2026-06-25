@@ -11,6 +11,11 @@ export interface AppState {
   sandboxEnabled: boolean;
   stages: StageState[];
   isJobDone: boolean;
+  /** Latched true once the sandbox stage reports `sandbox_ready` — i.e. the
+   *  backup was restored AND verified into the cloned disk (Core + apps +
+   *  folders). Drives the post-clone copy: when true the swapped disk boots
+   *  straight into the fully-restored HA with no manual restore step. */
+  restoreConfirmed: boolean;
   /** True while the initial fetchCurrentJob check is in-flight (suppresses
    *  device-picker flash before a redirect to /clone). */
   isCheckingJob: boolean;
@@ -31,6 +36,7 @@ export const appStore = new Store<AppState>({
   sandboxEnabled: true,
   stages: defaultStages,
   isJobDone: false,
+  restoreConfirmed: false,
   isCheckingJob: true,
 });
 
@@ -94,7 +100,7 @@ function buildStages(
     {
       name: "inject",
       label: "Inject backup",
-      description: "Copies backup to the new device for automatic restore on first boot.",
+      description: "Copies your backup onto the new device so it can be restored.",
       status: "pending",
       progress: 0,
     },
@@ -153,6 +159,7 @@ export const actions = {
       return {
         ...s,
         isJobDone: false,
+        restoreConfirmed: false,
         stages: buildStages(backup, systemInfo, s.skipFlash, s.sandboxEnabled),
       };
     });
@@ -168,6 +175,7 @@ export const actions = {
       skipFlash: false,
       sandboxEnabled: true,
       isJobDone: false,
+      restoreConfirmed: false,
       isCheckingJob: false,
       stages: buildStages({ type: "new" }, null, false, true, "sandbox_only"),
     }));
@@ -176,6 +184,10 @@ export const actions = {
   updateStage(stageName: string, status: StageState["status"], progress: number, speed?: number, eta?: number, description?: string) {
     appStore.setState((s) => ({
       ...s,
+      // Latch restoreConfirmed the moment the sandbox verifies the restore.
+      // Stays true even after the description later flips to "Shutting down…".
+      restoreConfirmed:
+        description === "sandbox_ready" ? true : s.restoreConfirmed,
       stages: s.stages.map((st) =>
         st.name === stageName ? { ...st, status, progress, speed, eta, ...(description != null && { description }) } : st
       ),
@@ -220,6 +232,7 @@ export const actions = {
       sandboxEnabled,
       stages,
       isJobDone: isCompleted,
+      restoreConfirmed: job.stages.sandbox?.description === "sandbox_ready",
       isCheckingJob: false,
     }));
   },
@@ -234,6 +247,7 @@ export const actions = {
       sandboxEnabled: true,
       stages: defaultStages.map((st) => ({ ...st })),
       isJobDone: false,
+      restoreConfirmed: false,
       isCheckingJob: false,
     }));
   },
