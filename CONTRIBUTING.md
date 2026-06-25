@@ -105,18 +105,50 @@ bun dev    # Vite dev server with proxy to backend at :8099
 
 The frontend is pre-built and committed to `rootfs/var/www/`. The Dockerfile copies these static assets — it does NOT build the frontend during Docker build.
 
-### Build Frontend
+### Fast Deploy (rsync + local addon)
+
+For rapid iteration without git commits, use the **local addon** approach. Files are rsync'd directly to the HA device and rebuilt in-place.
+
+**One-time setup:**
 
 ```bash
-cd disk-swap/frontend
-bun run build    # outputs to ../rootfs/var/www/
+# 1. rsync the addon to HA's local addons directory
+cd disk-swap
+bun run sync
+
+# 2. Reload the store so the Supervisor discovers it
+ssh root@<ha-ip> "ha store reload"
+
+# 3. Install the local addon (slug: local_disk-swap)
+ssh root@<ha-ip> "ha apps install local_disk-swap"
+
+# 4. Stop the store-based addon to avoid port conflicts
+ssh root@<ha-ip> "ha apps stop 64504a20_disk-swap"
 ```
 
-### Deploy to HA
+**Iterating (from `disk-swap/`):**
+
+| Command | What it does | When to use |
+|---------|-------------|-------------|
+| `bun run deploy` | Build frontend + rsync + rebuild | Frontend + backend changes |
+| `bun run deploy:quick` | rsync + rebuild (skip frontend build) | Backend-only changes |
+| `bun run build` | Build frontend | Frontend changes only |
+| `bun run sync` | rsync files to HA device | Push files without rebuilding |
+| `bun run rebuild` | Rebuild addon on HA device | Trigger Docker rebuild |
+| `bun run logs` | Tail addon logs | Debugging |
+| `bun run restart` | Restart addon without rebuild | Quick restart |
+
+No git commit, push, or version bump needed. Docker layer caching makes rebuilds fast since only the `COPY` layers change.
+
+> **Note:** `rebuild` errors if `config.yaml` version changed since install — use `ha apps update local_disk-swap` instead, or keep the version constant during development.
+
+### Git Deploy (store addon)
+
+For final releases or when the local addon isn't set up:
 
 ```bash
 # 1. Build frontend (if changed)
-cd disk-swap/frontend && bun run build && cd ../..
+cd disk-swap && bun run build
 
 # 2. Commit everything (source + built assets)
 git add -A && git commit -m "description"
@@ -127,17 +159,16 @@ git add -A && git commit -m "description"
 git push origin dev
 
 # 5. Update on HA (via SSH)
-ssh root@<ha-ip>
-ha store refresh
-ha apps update <slug>
+ssh root@<ha-ip> "ha store refresh && ha apps update <slug>"
 ```
 
 ### Useful HA CLI Commands
 
 ```bash
 ha apps info <slug>         # app status
-ha apps logs <slug>         # view logs
+ha apps logs <slug> -f      # tail logs
 ha apps restart <slug>      # restart without rebuild
+ha apps rebuild <slug>      # rebuild local addon
 ha supervisor logs          # supervisor logs
 ```
 

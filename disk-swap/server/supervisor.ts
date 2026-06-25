@@ -7,8 +7,10 @@ import type {
   SupervisorJobStatus,
   SupervisorBackup,
 } from "../shared/types.ts";
+import { formatBytes } from "../shared/format.ts";
 
 const SUPERVISOR_URL = "http://supervisor";
+const API_TIMEOUT_MS = 30_000;
 
 /** Machine name → HAOS board slug lookup table */
 const MACHINE_TO_SLUG: Record<string, string> = {
@@ -55,6 +57,7 @@ function supervisorHeaders(): Record<string, string> {
 async function supervisorGet<T>(path: string): Promise<T> {
   const res = await fetch(`${SUPERVISOR_URL}${path}`, {
     headers: supervisorHeaders(),
+    signal: AbortSignal.timeout(API_TIMEOUT_MS),
   });
 
   if (!res.ok) {
@@ -83,6 +86,7 @@ async function supervisorPost<T>(path: string, body: unknown): Promise<T> {
     method: "POST",
     headers: supervisorHeaders(),
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(API_TIMEOUT_MS),
   });
 
   if (!res.ok) {
@@ -111,6 +115,15 @@ export async function listBackups(): Promise<SupervisorBackup[]> {
   return data.backups;
 }
 
+/** Get the size of the most recent full backup in bytes (for progress estimation). */
+export async function getLastFullBackupSize(): Promise<number | null> {
+  const backups = await listBackups();
+  const fullBackups = backups
+    .filter((b) => b.type === "full" && b.size_bytes > 0)
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  return fullBackups.length > 0 ? fullBackups[0].size_bytes : null;
+}
+
 /** Create a full backup in background mode. Returns the job_id for polling. */
 export async function createFullBackup(): Promise<BackupJobResponse> {
   const name = `disk-swap-clone-${new Date().toISOString().slice(0, 10)}`;
@@ -127,9 +140,9 @@ export async function pollJob(jobId: string): Promise<SupervisorJobStatus> {
 }
 
 /** Get addon self-info (includes protected mode status). */
-export async function getAddonInfo(): Promise<{ protected: boolean; slug: string }> {
-  const data = await supervisorGet<{ protected: boolean; slug: string }>("/addons/self/info");
-  return { protected: data.protected, slug: data.slug };
+export async function getAddonInfo(): Promise<{ protected: boolean; slug: string; version: string }> {
+  const data = await supervisorGet<{ protected: boolean; slug: string; version: string }>("/addons/self/info");
+  return { protected: data.protected, slug: data.slug, version: data.version };
 }
 
 export async function getInfo(): Promise<SupervisorInfo> {
@@ -146,15 +159,6 @@ export async function getHostInfo(): Promise<HostInfo> {
 
 export async function getNetworkInfo(): Promise<NetworkInfo> {
   return supervisorGet<NetworkInfo>("/network/info");
-}
-
-function formatBytes(bytes: number): string {
-  const GB = 1024 ** 3;
-  const TB = 1024 ** 4;
-  if (bytes >= TB) return `${(bytes / TB).toFixed(1)} TB`;
-  if (bytes >= GB) return `${(bytes / GB).toFixed(1)} GB`;
-  const MB = 1024 ** 2;
-  return `${Math.round(bytes / MB)} MB`;
 }
 
 function extractIpAddress(network: NetworkInfo): string {
@@ -189,5 +193,6 @@ export async function getSystemInfo() {
     free_space_human: formatBytes(Math.round(hostInfo.disk_free * 1024 ** 3)),
     protected: addonInfo.protected,
     addon_slug: addonInfo.slug,
+    addon_version: addonInfo.version,
   };
 }

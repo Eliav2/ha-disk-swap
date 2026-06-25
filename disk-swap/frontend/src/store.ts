@@ -1,13 +1,24 @@
 import { Store } from "@tanstack/react-store";
-import type { BackupSelection, Device, ImageCacheStatus, Job, Screen, StageState, SystemInfoResponse } from "@/types";
+import type { BackupSelection, Device, Job, StageState, SystemInfoResponse } from "@/types";
+import { clearCurrentJob } from "@/lib/api";
 
+/** Non-navigation app state. Routing lives in the URL (see routes.tsx). */
 export interface AppState {
-  screen: Screen;
   selectedDevice: Device | null;
   selectedBackup: BackupSelection | null;
   backupName: string | null;
   skipFlash: boolean;
+  sandboxEnabled: boolean;
   stages: StageState[];
+  isJobDone: boolean;
+  /** Latched true once the sandbox stage reports `sandbox_ready` — i.e. the
+   *  backup was restored AND verified into the cloned disk (Core + apps +
+   *  folders). Drives the post-clone copy: when true the swapped disk boots
+   *  straight into the fully-restored HA with no manual restore step. */
+  restoreConfirmed: boolean;
+  /** True while the initial fetchCurrentJob check is in-flight (suppresses
+   *  device-picker flash before a redirect to /clone). */
+  isCheckingJob: boolean;
 }
 
 const defaultStages: StageState[] = [
@@ -18,37 +29,46 @@ const defaultStages: StageState[] = [
 ];
 
 export const appStore = new Store<AppState>({
-  screen: "device_select",
   selectedDevice: null,
   selectedBackup: null,
   backupName: null,
   skipFlash: false,
+  sandboxEnabled: true,
   stages: defaultStages,
+  isJobDone: false,
+  restoreConfirmed: false,
+  isCheckingJob: true,
 });
 
 /** Build stages with dynamic descriptions based on user selections and system info. */
 function buildStages(
   backup: BackupSelection,
   systemInfo?: SystemInfoResponse | null,
-  imageCache?: ImageCacheStatus | null,
   skipFlash?: boolean,
+  sandboxEnabled?: boolean,
+  mode: "clone" | "sandbox_only" = "clone",
 ): StageState[] {
+  if (mode === "sandbox_only") {
+    return [{
+      name: "sandbox" as const,
+      label: "Live Boot",
+      description: "Boots the inner HA against the existing data partition. Sandbox-only test mode.",
+      status: "pending" as const,
+      progress: 0,
+      experimental: true,
+    }];
+  }
   const version = systemInfo?.os_version ?? "latest";
   const board = systemInfo?.board_slug ?? "your device";
   const releaseUrl = `https://github.com/home-assistant/operating-system/releases/tag/${version}`;
-  const isCached = imageCache?.cached === true;
 
   const downloadDesc = skipFlash
     ? "Skipped — device already has HA OS."
-    : isCached
-      ? `Using cached HA OS ${version} image for ${board}.`
-      : `Downloads HA OS ${version} for ${board}.`;
+    : `Downloads HA OS ${version} for ${board}.`;
 
   const downloadLabel = skipFlash
     ? "Download HA OS image (skipped)"
-    : isCached
-      ? "Download HA OS image (cached)"
-      : "Download HA OS image";
+    : "Download HA OS image";
 
   return [
     {
@@ -80,10 +100,18 @@ function buildStages(
     {
       name: "inject",
       label: "Inject backup",
-      description: "Copies backup to the new device for automatic restore on first boot.",
+      description: "Copies your backup onto the new device so it can be restored.",
       status: "pending",
       progress: 0,
     },
+    ...(sandboxEnabled ? [{
+      name: "sandbox" as const,
+      label: "Live Boot",
+      description: "Boots your new HA OS in parallel — verify your backup restored correctly before you swap the disk.",
+      status: "pending" as const,
+      progress: 0,
+      experimental: true,
+    }] : []),
   ];
 }
 
@@ -92,16 +120,23 @@ export const actions = {
     appStore.setState((s) => ({ ...s, selectedDevice: device }));
   },
 
-  next() {
-    appStore.setState((s) => ({ ...s, screen: "confirm" as const }));
-  },
-
-  /** After the erase warning, go to backup selection. */
-  confirmErase() {
+  /** Called when navigating into /setup/$device. Defaults skipFlash based on
+   *  whether the device already has HA OS; the user can still flip it on the
+   *  setup page's Reflash switch. */
+  prepareSetup() {
     appStore.setState((s) => ({
       ...s,
-      screen: "backup_select" as const,
       skipFlash: s.selectedDevice?.has_ha_os ?? false,
+    }));
+  },
+
+  /** Called when navigating from /setup back to /. Clears setup choices. */
+  resetSetup() {
+    appStore.setState((s) => ({
+      ...s,
+      selectedBackup: null,
+      skipFlash: false,
+      sandboxEnabled: true,
     }));
   },
 
@@ -113,88 +148,107 @@ export const actions = {
     appStore.setState((s) => ({ ...s, skipFlash: skip }));
   },
 
-  /** Start the pipeline after backup is selected. */
-  startClone(systemInfo?: SystemInfoResponse | null, imageCache?: ImageCacheStatus | null) {
+  setSandboxEnabled(enabled: boolean) {
+    appStore.setState((s) => ({ ...s, sandboxEnabled: enabled }));
+  },
+
+  /** Initialize stage list + reset isJobDone before kicking off the clone API call. */
+  startClone(systemInfo?: SystemInfoResponse | null) {
     appStore.setState((s) => {
       const backup = s.selectedBackup ?? { type: "new" as const };
       return {
         ...s,
-        screen: "progress" as const,
-        stages: buildStages(backup, systemInfo, imageCache, s.skipFlash),
+        isJobDone: false,
+        restoreConfirmed: false,
+        stages: buildStages(backup, systemInfo, s.skipFlash, s.sandboxEnabled),
       };
     });
   },
 
-  cancel() {
-    appStore.setState((s) => ({
-      ...s,
-      screen: "device_select" as const,
-      selectedDevice: null,
+  /** Sandbox-only test mode: bind the device, build a single-stage view, and
+   *  let the caller navigate to /test/$device. */
+  startSandboxOnly(device: Device) {
+    appStore.setState(() => ({
+      selectedDevice: device,
       selectedBackup: null,
       backupName: null,
       skipFlash: false,
+      sandboxEnabled: true,
+      isJobDone: false,
+      restoreConfirmed: false,
+      isCheckingJob: false,
+      stages: buildStages({ type: "new" }, null, false, true, "sandbox_only"),
     }));
   },
 
-  /** Go back from backup_select to confirm (device selection). */
-  backToDeviceSelect() {
+  updateStage(stageName: string, status: StageState["status"], progress: number, speed?: number, eta?: number, description?: string) {
     appStore.setState((s) => ({
       ...s,
-      screen: "device_select" as const,
-      selectedBackup: null,
-      skipFlash: false,
-    }));
-  },
-
-  updateStage(stageName: string, status: StageState["status"], progress: number, speed?: number, eta?: number) {
-    appStore.setState((s) => ({
-      ...s,
+      // Latch restoreConfirmed the moment the sandbox verifies the restore.
+      // Stays true even after the description later flips to "Shutting down…".
+      restoreConfirmed:
+        description === "sandbox_ready" ? true : s.restoreConfirmed,
       stages: s.stages.map((st) =>
-        st.name === stageName ? { ...st, status, progress, speed, eta } : st
+        st.name === stageName ? { ...st, status, progress, speed, eta, ...(description != null && { description }) } : st
       ),
     }));
   },
 
-  complete(backupName?: string | null) {
+  doneCheckingJob() {
+    appStore.setState((s) => ({ ...s, isCheckingJob: false }));
+  },
+
+  /** WS "done" message arrived — pipeline is finished. */
+  finishJob(backupName?: string | null) {
     appStore.setState((s) => ({
       ...s,
-      screen: "complete" as const,
+      isJobDone: true,
       backupName: backupName ?? s.backupName,
     }));
   },
 
-  resumeJob(job: Job, systemInfo?: SystemInfoResponse | null, imageCache?: ImageCacheStatus | null) {
-    const screen: Screen =
-      job.status === "completed" ? "complete" : "progress";
+  resumeJob(job: Job, systemInfo?: SystemInfoResponse | null) {
+    const isCompleted = job.status === "completed";
+    const skipFlash = job.skipFlash ?? false;
+    const sandboxEnabled = job.sandboxEnabled ?? false;
+    const mode = job.mode ?? "clone";
 
-    const base = buildStages({ type: "new" }, systemInfo, imageCache);
+    const base = buildStages({ type: "new" }, systemInfo, skipFlash, sandboxEnabled, mode);
     const stages: StageState[] = base.map((init) => {
       const jobStage = job.stages[init.name];
       return {
         ...init,
         status: jobStage?.status ?? "pending",
         progress: jobStage?.progress ?? 0,
+        ...(jobStage?.description && { description: jobStage.description }),
       };
     });
 
     appStore.setState(() => ({
-      screen,
       selectedDevice: job.device,
       selectedBackup: null,
       backupName: job.backupName,
-      skipFlash: false,
+      skipFlash,
+      sandboxEnabled,
       stages,
+      isJobDone: isCompleted,
+      restoreConfirmed: job.stages.sandbox?.description === "sandbox_ready",
+      isCheckingJob: false,
     }));
   },
 
   reset() {
+    clearCurrentJob().catch(() => {});
     appStore.setState(() => ({
-      screen: "device_select" as const,
       selectedDevice: null,
       selectedBackup: null,
       backupName: null,
       skipFlash: false,
+      sandboxEnabled: true,
       stages: defaultStages.map((st) => ({ ...st })),
+      isJobDone: false,
+      restoreConfirmed: false,
+      isCheckingJob: false,
     }));
   },
 };

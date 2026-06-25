@@ -35,14 +35,26 @@ If the target device already has HA OS, you can skip the flash stage and only re
 
 ### 4. Clone
 
-The pipeline runs 4 stages automatically:
+The pipeline runs automatically:
 
 1. **Backup** — creates a full backup of your HA configuration, apps, and database
 2. **Download** — fetches the correct HA OS image for your hardware from GitHub
 3. **Flash** — writes the OS image to the USB device
 4. **Inject** — copies the backup onto the new device and sets up auto-restore
+5. **Live Boot** *(optional)* — boots the new HA OS in parallel inside the add-on so you can verify your backup before swapping (see below)
 
 You'll see real-time progress with speed (MB/s) and estimated time remaining. You can safely navigate away — the clone continues in the background.
+
+### 4b. Live Boot (Optional)
+
+Enable **Live Boot** on the backup selection screen to add an extra verification step after cloning. Once the new disk is ready, your new HA OS boots inside the add-on:
+
+- A live Home Assistant instance running directly from your new disk appears in an embedded panel
+- Complete onboarding and restore your backup in the inner HA UI
+- The inner HA is **fully isolated** — it cannot see or control your smart home devices, and it has no access to your existing HA setup
+- Once you've confirmed everything restored correctly, click **Done — Ready to Swap Disk** to shut down the sandbox and proceed
+
+This step is entirely optional. If you skip it, the disk is still ready to boot and will auto-restore your backup on first physical boot.
 
 ### 5. Swap and Boot
 

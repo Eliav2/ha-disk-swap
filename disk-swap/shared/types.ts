@@ -38,6 +38,7 @@ export interface SystemInfoResponse {
   free_space_human: string;
   protected: boolean;
   addon_slug: string;
+  addon_version: string;
 }
 
 /** Supervisor GET /info response data */
@@ -74,16 +75,21 @@ export interface NetworkInfo {
 
 // --- Clone Job Types ---
 
-export type StageName = "backup" | "download" | "flash" | "inject";
+export type StageName = "backup" | "download" | "flash" | "inject" | "sandbox";
 export type StageStatus = "pending" | "in_progress" | "completed" | "failed";
 
 export interface StageState {
   name: StageName;
   status: StageStatus;
   progress: number; // 0–100
+  description?: string;
+  speed?: number;
+  eta?: number;
 }
 
 export type JobStatus = "in_progress" | "completed" | "failed";
+
+export type JobMode = "clone" | "sandbox_only";
 
 export interface Job {
   id: string;
@@ -93,11 +99,17 @@ export interface Job {
   error: string | null;
   backupName: string | null;
   createdAt: number;
+  skipFlash?: boolean;
+  sandboxEnabled?: boolean;
+  /** "clone" runs the full pipeline. "sandbox_only" skips backup/download/flash/inject
+   *  and just boots the inner HA against the existing data partition — used for
+   *  testing sandbox.ts changes without a 20-minute clone cycle. */
+  mode?: JobMode;
 }
 
 /** WebSocket messages (server → client) */
 export type WsMessage =
-  | { type: "stage_update"; stage: StageName; status: StageStatus; progress: number; speed?: number; eta?: number }
+  | { type: "stage_update"; stage: StageName; status: StageStatus; progress: number; speed?: number; eta?: number; description?: string }
   | { type: "error"; stage: StageName; message: string }
   | { type: "done"; backupName: string | null }
   | { type: "cancelled" };
@@ -107,6 +119,7 @@ export interface StartCloneRequest {
   device: string;
   backup_slug?: string;
   skip_flash?: boolean;
+  skip_sandbox?: boolean;
 }
 
 /** Supervisor backup entry from GET /backups */
@@ -116,15 +129,16 @@ export interface SupervisorBackup {
   date: string;
   type: "full" | "partial";
   size: number; // MB float from Supervisor
+  size_bytes: number;
 }
 
 /** Response shape for GET /api/image-cache */
 export interface ImageCacheStatus {
   cached: boolean;
-  version: string;
-  board: string;
-  size_bytes: number;
-  size_human: string;
+  version?: string;
+  board?: string;
+  size_bytes?: number;
+  size_human?: string;
 }
 
 /** Supervisor backup creation response */

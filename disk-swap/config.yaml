@@ -1,5 +1,5 @@
 name: Disk Swap
-version: "1.0.0"
+version: "1.3.0"
 slug: disk-swap
 description: "Flash HA OS to any USB device — directly from Home Assistant, no PC required."
 url: "https://github.com/Eliav2/ha-disk-swap"
@@ -20,9 +20,17 @@ udev: true
 
 # Linux capabilities needed for block device I/O (dd write)
 # and mount operations (inject stage).
+# SYS_TIME + SYS_NICE: required so the DinD sandbox can grant them to restored
+# inner add-ons that request them (e.g. Advanced SSH & Web Terminal). A container
+# can only pass capabilities to its children that it holds itself, so the outer
+# add-on must carry the union of caps any cloned add-on needs.
 privileged:
   - SYS_RAWIO
   - SYS_ADMIN
+  - NET_ADMIN
+  - SYS_RESOURCE
+  - SYS_TIME
+  - SYS_NICE
 
 # Ingress web UI
 ingress: true
@@ -30,6 +38,10 @@ ingress_port: 8099
 ingress_entry: /
 panel_icon: "mdi:micro-sd"
 panel_title: "Disk Swap"
+
+# Direct port for the sandbox HA proxy (different origin from port 8123 → no auth sharing)
+ports:
+  8124/tcp: 8124
 
 # Supervisor API access
 # manager role: access to /backups/*, /jobs/* (for polling backup progress),

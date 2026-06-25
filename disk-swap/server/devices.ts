@@ -1,5 +1,6 @@
 import { $ } from "bun";
 import type { RawBlockDevice, Device } from "../shared/types.ts";
+import { formatBytes } from "../shared/format.ts";
 
 /**
  * Determine the boot disk name (e.g. "mmcblk0" or "sda").
@@ -56,13 +57,6 @@ async function hasHaOs(devicePath: string): Promise<boolean> {
   }
 }
 
-function formatSize(bytes: number): string {
-  const GB = 1024 ** 3;
-  const TB = 1024 ** 4;
-  if (bytes >= TB) return `${(bytes / TB).toFixed(1)} TB`;
-  return `${Math.round(bytes / GB)} GB`;
-}
-
 /**
  * List all USB block devices that are safe flash targets.
  */
@@ -93,7 +87,7 @@ export async function listUsbDevices(): Promise<Device[]> {
         name: dev.name,
         path,
         size,
-        size_human: formatSize(size),
+        size_human: formatBytes(size),
         vendor: (dev.vendor ?? "").trim(),
         model: (dev.model ?? "").trim(),
         tran: dev.tran ?? "unknown",

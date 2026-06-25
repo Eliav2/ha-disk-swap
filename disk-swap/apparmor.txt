@@ -8,7 +8,21 @@ profile disk_swap flags=(attach_disconnected,mediate_deleted) {
   capability sys_admin,
   capability dac_override,
   capability dac_read_search,
+  # DinD sandbox: layer extraction (chown), bridge networking, container user switching,
+  # oom_score_adj management (sys_resource needed because Supervisor sets adj=200 on add-ons)
+  capability chown,
+  capability sys_chroot,
+  capability sys_resource,
+  capability net_admin,
+  capability setuid,
+  capability setgid,
   file,
+  # Allow inner containerd/runc to escape to unconfined for container namespace setup.
+  # Required for DinD: without this, setns fails when inner runc tries to enter a
+  # container's network namespace (exit status 1 from containerd-shim-runc-v2).
+  change_profile -> unconfined,
+  # Allow ptrace-style operations needed by containerd-shim for namespace management.
+  ptrace (read, trace),
   signal (send) set=(kill,term,int,hup,cont),
 
   # S6-Overlay
@@ -29,7 +43,7 @@ profile disk_swap flags=(attach_disconnected,mediate_deleted) {
   /tmp/** rwk,
 
   # Add-on data
-  /data/** rw,
+  /data/** rwix,
 
   # Static web UI files
   /var/www/** r,
@@ -78,11 +92,17 @@ profile disk_swap flags=(attach_disconnected,mediate_deleted) {
   /usr/bin/mount ix,
   /usr/bin/umount ix,
   mount,
+  umount,
+  pivot_root,
   /usr/sbin/e2fsck ix,
   /usr/bin/findmnt ix,
 
   # Backup volume access
   /backup/** rw,
+
+  # Loop device for partition mounting (avoids page cache aliasing)
+  /dev/loop* rw,
+  /dev/loop-control rw,
 
   # Temp mount point for target device
   /mnt/newsd/** rw,

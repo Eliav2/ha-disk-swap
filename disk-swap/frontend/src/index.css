@@ -127,3 +127,146 @@
     @apply font-sans;
     }
 }
+/* Drawer — enter/exit transitions driven by Base UI's data-starting-style/data-ending-style.
+   Default transform reads Base UI's swipe vars so the panel tracks the finger during gestures. */
+
+[data-slot='drawer-overlay'] {
+  transition: opacity 350ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+[data-slot='drawer-overlay'][data-starting-style],
+[data-slot='drawer-overlay'][data-ending-style] {
+  opacity: 0;
+}
+
+/* Drawer popup transform: composes Base UI's swipe variables with --nested-drawers stacking.
+   Following the pattern documented at https://base-ui.com/react/components/drawer#stacking-and-animations
+   so deeper nesting recedes proportionally instead of relying on a single hand-tuned offset. */
+[data-slot='drawer-content'] {
+  --peek: 1rem;
+  --stack-step: 0.04;
+  --bleed: 3rem;
+  --drawer-stack-width: 62.5rem; /* matches DRAWER_MAX_WIDTH (max-w-250) — the widest drawer in the app */
+  --stack-progress: clamp(0, var(--drawer-swipe-progress, 0), 1);
+  --stack-peek-offset: max(0px, calc((var(--nested-drawers, 0) - var(--stack-progress)) * var(--peek)));
+  --stack-scale-base: max(0, calc(1 - (var(--nested-drawers, 0) * var(--stack-step))));
+  --stack-scale: calc(var(--stack-scale-base) + (var(--stack-step) * var(--stack-progress)));
+  --stack-shrink: calc(1 - var(--stack-scale));
+  /* Horizontal stack uses --drawer-stack-width; vertical stack uses Base UI's --drawer-frontmost-height. */
+  --stack-h-extent: max(0px, calc(var(--drawer-stack-width) - var(--bleed)));
+  --stack-v-extent: max(0px, calc(var(--drawer-frontmost-height, var(--drawer-height, 0px)) - var(--bleed)));
+  will-change: transform;
+  transition:
+    transform 350ms cubic-bezier(0.32, 0.72, 0, 1),
+    max-width 350ms cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 250ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@layer utilities {
+  [data-slot='drawer-content'][data-direction='right'][data-nested-drawer-open] {
+    max-width: 62.5rem !important;
+  }
+  [data-slot='drawer-content'][data-direction='left'][data-nested-drawer-open] {
+    max-width: 62.5rem !important;
+  }
+  [data-slot='drawer-content'][data-direction='top'][data-nested-drawer-open],
+  [data-slot='drawer-content'][data-direction='bottom'][data-nested-drawer-open] {
+    max-height: 80vh !important;
+  }
+
+  [data-slot='drawer-content'][data-context-hidden][data-direction='right'] {
+    transform: translateX(var(--drawer-swipe-movement-x, 0px)) scale(0.92) !important;
+    opacity: 0 !important;
+  }
+  [data-slot='drawer-content'][data-context-hidden][data-direction='left'] {
+    transform: translateX(var(--drawer-swipe-movement-x, 0px)) scale(0.92) !important;
+    opacity: 0 !important;
+  }
+  [data-slot='drawer-content'][data-context-hidden][data-direction='top'],
+  [data-slot='drawer-content'][data-context-hidden][data-direction='bottom'] {
+    transform: translateY(var(--drawer-swipe-movement-y, 0px)) scale(0.92) !important;
+    opacity: 0 !important;
+  }
+}
+
+[data-slot='drawer-content'][data-direction='right'] {
+  transform-origin: left center;
+  transform: translateX(
+      calc(
+        var(--drawer-swipe-movement-x, 0px) - var(--stack-peek-offset) - (var(--stack-shrink) * var(--stack-h-extent))
+      )
+    )
+    scale(var(--stack-scale));
+}
+
+[data-slot='drawer-content'][data-direction='left'] {
+  transform-origin: right center;
+  transform: translateX(
+      calc(
+        var(--drawer-swipe-movement-x, 0px) + var(--stack-peek-offset) + (var(--stack-shrink) * var(--stack-h-extent))
+      )
+    )
+    scale(var(--stack-scale));
+}
+
+[data-slot='drawer-content'][data-direction='top'] {
+  transform-origin: center bottom;
+  transform: translateY(
+      calc(
+        var(--drawer-swipe-movement-y, 0px) + var(--stack-peek-offset) + (var(--stack-shrink) * var(--stack-v-extent))
+      )
+    )
+    scale(var(--stack-scale));
+}
+
+[data-slot='drawer-content'][data-direction='bottom'] {
+  transform-origin: center top;
+  transform: translateY(
+      calc(
+        var(--drawer-swipe-movement-y, 0px) - var(--stack-peek-offset) - (var(--stack-shrink) * var(--stack-v-extent))
+      )
+    )
+    scale(var(--stack-scale));
+}
+
+[data-slot='drawer-content'][data-direction='right'][data-starting-style],
+[data-slot='drawer-content'][data-direction='right'][data-ending-style] {
+  transform: translateX(100%);
+}
+
+[data-slot='drawer-content'][data-direction='left'][data-starting-style],
+[data-slot='drawer-content'][data-direction='left'][data-ending-style] {
+  transform: translateX(-100%);
+}
+
+[data-slot='drawer-content'][data-direction='top'][data-starting-style],
+[data-slot='drawer-content'][data-direction='top'][data-ending-style] {
+  transform: translateY(-100%);
+}
+
+[data-slot='drawer-content'][data-direction='bottom'][data-starting-style],
+[data-slot='drawer-content'][data-direction='bottom'][data-ending-style] {
+  transform: translateY(100%);
+}
+
+[data-slot='drawer-content'][data-swiping] {
+  user-select: none;
+  transition-duration: 0ms;
+}
+
+[data-slot='drawer-content']::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-color: transparent;
+  pointer-events: none;
+  transition:
+    background-color 350ms cubic-bezier(0.32, 0.72, 0, 1),
+    backdrop-filter 350ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+[data-slot='drawer-content'][data-nested-drawer-open]::after {
+  background-color: rgb(0 0 0 / 0.1);
+  backdrop-filter: blur(2px);
+}
