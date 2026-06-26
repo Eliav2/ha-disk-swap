@@ -107,7 +107,7 @@ function buildStages(
     ...(sandboxEnabled ? [{
       name: "sandbox" as const,
       label: "Live Boot",
-      description: "Boots your new HA OS in parallel — verify your backup restored correctly before you swap the disk.",
+      description: "Restores your backup into the new disk (Core, add-ons, folders, history) and boots it live to confirm — so it comes up ready. Skipped = manual restore on first boot.",
       status: "pending" as const,
       progress: 0,
       experimental: true,

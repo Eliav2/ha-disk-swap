@@ -41,14 +41,22 @@ export function LiveBootDrawer() {
 
   // Sandbox lifecycle states, derived from the WS stage description:
   //   sandbox_status:… → still booting the inner Supervisor/Core
-  //   sandbox_restoring → restore triggered, HA Core restarting
-  //   sandbox_verifying → inspecting the restored instance (onboarded?)
+  //   sandbox_restoring[:detail] → restore triggered, HA Core restarting
+  //   sandbox_verifying[:detail] → restore running (detail = live sub-stage,
+  //       e.g. "Restoring add-on 4/10: tailscale…")
   //   sandbox_ready     → restore VERIFIED — this is the user's HA
   //   sandbox_restore_failed → couldn't verify; offer manual restore
   const restoreFailed = desc === "sandbox_restore_failed";
   const verifiedReady = desc === "sandbox_ready";
-  const restoring = desc === "sandbox_restoring";
-  const verifying = desc === "sandbox_verifying";
+  const restoring = desc === "sandbox_restoring" || desc.startsWith("sandbox_restoring:");
+  const verifying = desc === "sandbox_verifying" || desc.startsWith("sandbox_verifying:");
+  // Live sub-stage detail carried after the colon (if any).
+  const restoreDetail =
+    restoring && desc.startsWith("sandbox_restoring:")
+      ? desc.slice("sandbox_restoring:".length)
+      : verifying && desc.startsWith("sandbox_verifying:")
+        ? desc.slice("sandbox_verifying:".length)
+        : null;
   const loading = statusMsg != null;
   // Terminal = the run reached a final state and we surface a footer action.
   const terminal = verifiedReady || restoreFailed;
@@ -149,13 +157,13 @@ export function LiveBootDrawer() {
                 {loading
                   ? statusMsg
                   : restoring
-                    ? "Restoring your backup automatically — the instance will restart momentarily."
+                    ? "Starting the restore — the instance will restart to load your backup."
                     : verifying
-                      ? "Inspecting the restored instance to verify it came back correctly…"
+                      ? (restoreDetail ?? "Restoring your backup into the new disk — Core config, add-ons, folders and history. This can take several minutes on a large backup.")
                       : restoreFailed
-                        ? "Automatic restore couldn't be verified — you can restore manually below."
+                        ? "The automatic restore didn't complete — you can restore manually below, or it'll restore on first boot."
                         : verifiedReady
-                          ? "Your backup was restored and verified. Sandbox is isolated — it can't touch your real devices."
+                          ? "Your backup is restored and verified onto the new disk. Sandbox is isolated — it can't touch your real devices."
                           : "Sandbox is fully isolated — it cannot control your devices. Click Done when you're finished."}
               </DrawerDescription>
             </div>
@@ -209,15 +217,17 @@ export function LiveBootDrawer() {
                   <p className="text-sm font-medium">
                     {loading
                       ? statusMsg
-                      : restoring
-                        ? "Restoring your backup…"
-                        : "Verifying the restore…"}
+                      : restoreDetail
+                        ? restoreDetail
+                        : restoring
+                          ? "Starting the restore…"
+                          : "Restoring your backup…"}
                   </p>
                   <p className="text-muted-foreground max-w-sm text-xs">
-                    {restoring
-                      ? "Writing your configuration, automations, and history into the new instance."
-                      : verifying
-                        ? "Checking that Home Assistant came back fully onboarded with your data."
+                    {restoring && !restoreDetail
+                      ? "Loading your backup so it can be applied to the new disk."
+                      : verifying || restoreDetail
+                        ? "Restoring Core config, add-ons, folders and history onto the new disk. Large backups and add-ons can take several minutes."
                         : "Booting an isolated Home Assistant against the new disk."}
                   </p>
                 </div>

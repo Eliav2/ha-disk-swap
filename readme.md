@@ -45,6 +45,10 @@ And the cloned disk it produces boots **clean, on its own**, straight into your 
 5. **Swap** — shut down, remove the old boot media, insert the cloned device
 6. **Boot** — power on; it comes straight up as your Home Assistant, already restored
 
+> **Already cloned a disk?** Any device that already has Home Assistant OS shows a small **Test Live Boot** link — it boots that disk in the sandbox (~5 min) to confirm it comes up, with **no clone, flash, or restore**. Handy for re-checking a finished clone without redoing the whole pipeline.
+
+![Test Live Boot link on a device that already has Home Assistant OS](https://github.com/user-attachments/assets/c1931409-723a-44d7-9bfd-34b201ddb8e0)
+
 ## What Gets Restored
 
 **With Live Boot (full clone):** everything is restored *and verified* into the new disk before you swap —

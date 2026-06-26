@@ -34,11 +34,15 @@ function formatEta(seconds: number): string {
 function friendlySandboxDesc(desc?: string): string | undefined {
   if (!desc) return desc;
   if (desc.startsWith("sandbox_status:")) return desc.slice("sandbox_status:".length);
+  // Restoring/verifying may carry a live sub-stage after a colon
+  // (e.g. "sandbox_verifying:Restoring add-on 4/10: tailscale…").
+  if (desc.startsWith("sandbox_restoring:")) return desc.slice("sandbox_restoring:".length);
+  if (desc.startsWith("sandbox_verifying:")) return desc.slice("sandbox_verifying:".length);
   switch (desc) {
     case "sandbox_restoring":
       return "Restoring your backup…";
     case "sandbox_verifying":
-      return "Verifying the restore…";
+      return "Restoring your backup…";
     case "sandbox_ready":
       return "Restored & verified — open the Live Boot panel below";
     case "sandbox_restore_failed":

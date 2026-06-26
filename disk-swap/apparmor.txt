@@ -8,9 +8,19 @@ profile disk_swap flags=(attach_disconnected,mediate_deleted) {
   capability sys_admin,
   capability dac_override,
   capability dac_read_search,
-  # DinD sandbox: layer extraction (chown), bridge networking, container user switching,
-  # oom_score_adj management (sys_resource needed because Supervisor sets adj=200 on add-ons)
+  # DinD sandbox: layer extraction (chown/fowner/fsetid/mknod), bridge networking,
+  # container user switching, oom_score_adj management (sys_resource needed because
+  # Supervisor sets adj=200 on add-ons).
+  # fowner: chmod/utimes on files the inner dockerd chowned to a FOREIGN uid during
+  #   image-layer extraction (e.g. /run/nginx, /run/systemd/netif, /var/cache/apt/...).
+  #   The kernel grants CAP_FOWNER, but apparmor mediates capability USE: without this
+  #   rule chmod returns EPERM ("failed to register layer: chmod ...: operation not
+  #   permitted") and any addon image with non-root-owned files fails to install.
+  # fsetid: preserve setuid/setgid bits on extracted files. mknod: device nodes in layers.
   capability chown,
+  capability fowner,
+  capability fsetid,
+  capability mknod,
   capability sys_chroot,
   capability sys_resource,
   capability net_admin,

@@ -664,6 +664,116 @@ async function isOnboarded(coreUrl: string): Promise<boolean> {
 }
 
 /**
+ * True once the restored on-disk auth contains a real (non-system) owner account.
+ * This is the authoritative "the home_assistant restore stage actually landed the
+ * user's account" signal — readable straight off the mounted data partition, with
+ * no Core/Supervisor API or auth needed (works even while Core is stopped mid-restore).
+ */
+async function restoredHumanOwnerPresent(): Promise<boolean> {
+  const authStorage = `${DATA_MOUNT}/supervisor/homeassistant/.storage/auth`;
+  return Bun.file(authStorage)
+    .json()
+    .then((a) => Array.isArray(a?.data?.users) && a.data.users.some((u: { is_owner?: boolean; system_generated?: boolean }) => u?.is_owner === true && u?.system_generated === false))
+    .catch(() => false);
+}
+
+/** Humanize an addon slug for UI: drop the "<hash>_"/"core_"/"local_" prefix. */
+function friendlyAddonName(slug: string): string {
+  return slug.replace(/^[0-9a-fA-F]{8}_/, "").replace(/^(core|local)_/, "").replace(/_/g, " ");
+}
+
+/**
+ * Derive a human, live sub-status of the in-flight Supervisor restore by reading
+ * the inner Supervisor's recent log. Maps the restore's stage machine
+ * (folders → home_assistant → addon_repositories → addons) to friendly text, and
+ * within the addons stage counts "Restore/Install of image for app …" lines to
+ * show "Restoring add-on N/total: <name>…". Returns null if nothing recognizable
+ * yet. Best-effort: a log read failure just yields null (caller keeps prior text).
+ */
+async function restoreSubStatus(totalAddons: number): Promise<string | null> {
+  const out = await $`docker -H unix://${DIND_SOCK} logs --tail 200 hassio_supervisor`.text().catch(() => "");
+  if (!out) return null;
+  let stage: string | null = null;
+  const installs: string[] = [];
+  for (const ln of out.split("\n")) {
+    const s = ln.match(/Restore \S+ starting stage (\w+)/);
+    if (s) {
+      stage = s[1];
+      if (stage === "addons") installs.length = 0;
+      continue;
+    }
+    const a = ln.match(/Restore\/Install of image for app (\S+)/);
+    if (a && stage === "addons") installs.push(a[1]);
+  }
+  if (stage === "addons" && installs.length) {
+    const cur = friendlyAddonName(installs[installs.length - 1]);
+    const n = Math.min(installs.length, totalAddons || installs.length);
+    return `Restoring add-on ${n}/${totalAddons || installs.length}: ${cur}…`;
+  }
+  switch (stage) {
+    case "folders": return "Restoring folders (media, share, ssl)…";
+    case "home_assistant": return "Restoring Home Assistant config & history…";
+    case "addon_repositories": return "Restoring add-on repositories…";
+    case "addons": return "Restoring add-ons…";
+    default: return null;
+  }
+}
+
+/** Single-shot onboarding check (no internal retry) for use inside a poll loop. */
+async function coreOnboardedNow(coreUrl: string): Promise<boolean> {
+  const res = await fetch(`${coreUrl}/api/onboarding`, { signal: AbortSignal.timeout(5_000) }).catch(() => null);
+  if (res && (res.status === 404 || res.status === 401)) return true;
+  if (res?.ok && (res.headers.get("content-type") ?? "").includes("json")) {
+    const steps = await res.json().catch(() => null);
+    if (Array.isArray(steps)) return steps.find((s) => s?.step === "user")?.done === true;
+  }
+  return false;
+}
+
+/**
+ * Wait for the Supervisor restore to actually complete, emitting live sub-status.
+ *
+ * The B1 race this fixes: the onboarding restore POST kicks off a long multi-stage
+ * job — folders → home_assistant → addon_repositories → addons. During the FIRST
+ * stage the PRE-restore onboarding Core is still up, so verifying on "Core reachable"
+ * fired ~1 min in, before the home_assistant stage wrote the owner. And Core is
+ * stopped for the home_assistant/addons stages and only restarts (as the RESTORED
+ * version) at the very END of the job — so the true done-signal is "owner on disk
+ * AND the restored Core is back up & onboarded".
+ *
+ * Returns:
+ *   "onboarded"        → owner restored + restored Core up & onboarded (full success)
+ *   "owner_no_onboard" → owner restored but Core not onboarded (marker likely dropped
+ *                        → caller finalizes from the backup's own marker)
+ *   "timeout"          → owner never appeared (restore genuinely failed)
+ */
+async function waitForRestoreComplete(
+  coreUrl: string,
+  totalAddons: number,
+  progressCb: (percent: number, description?: string) => void,
+  timeoutMs: number,
+): Promise<"onboarded" | "owner_no_onboard" | "timeout"> {
+  const deadline = Date.now() + timeoutMs;
+  let ownerSeen = false;
+  let lastDetail = "";
+  while (Date.now() < deadline) {
+    const sub = await restoreSubStatus(totalAddons);
+    if (sub && sub !== lastDetail) {
+      lastDetail = sub;
+      progressCb(95, `sandbox_verifying:${sub}`);
+      console.log(`[sandbox] ${sub}`);
+    }
+    if (!ownerSeen && (await restoredHumanOwnerPresent())) {
+      ownerSeen = true;
+      console.log("[sandbox] User account restored on disk — waiting for the restored Core to come online…");
+    }
+    if (ownerSeen && (await coreOnboardedNow(coreUrl))) return "onboarded";
+    await new Promise((r) => setTimeout(r, 5_000));
+  }
+  return ownerSeen ? "owner_no_onboard" : "timeout";
+}
+
+/**
  * HA's onboarding-backup-restore restores everything (auth, registries, DB) but
  * drops `.storage/onboarding`, so the instance boots back into the onboarding
  * wizard despite all the user's data being present. Finalize it using the marker
@@ -683,11 +793,7 @@ async function finalizeOnboardingFromBackup(backupSlug: string, coreUrl: string)
   // produce an instance that *looks* onboarded but has no account to log into —
   // the exact false-success that hides a blocked/failed restore. If the owner
   // isn't here, the restore genuinely didn't work; surface that instead.
-  const authStorage = `${DATA_MOUNT}/supervisor/homeassistant/.storage/auth`;
-  const hasOwner = await Bun.file(authStorage)
-    .json()
-    .then((a) => Array.isArray(a?.data?.users) && a.data.users.some((u: { is_owner?: boolean; system_generated?: boolean }) => u?.is_owner === true && u?.system_generated === false))
-    .catch(() => false);
+  const hasOwner = await restoredHumanOwnerPresent();
   if (!hasOwner) {
     console.warn("[sandbox] Refusing to finalize onboarding — no human owner in restored auth (the restore did not actually bring the user's account; not masking it)");
     return false;
@@ -879,28 +985,31 @@ async function autoRestoreBackup(
     throw new Error(`Onboarding restore failed after retries (${res.status}): ${body}`);
   }
 
-  console.log("[sandbox] Restore triggered, waiting for HA to restart…");
+  console.log("[sandbox] Restore triggered, waiting for the Supervisor restore job to complete…");
   progressCb(90, "sandbox_restoring");
-
-  // HA shuts down within ~5s of restore being triggered, then comes back up.
-  // After restore the Supervisor may need to pull a different Core version
-  // (backup version != latest), which can take time in DinD. Use 15-min timeout.
   await new Promise((r) => setTimeout(r, 8_000));
-  await waitForHttp(coreUrl, 15 * 60 * 1000);
-  console.log("[sandbox] HA Core back online after restore");
-
-  // VERIFY the restore actually produced a usable, onboarded instance. A restore
-  // can "succeed" (files written) yet boot back into the onboarding wizard because
-  // HA's onboarding-restore drops .storage/onboarding. Only a verified-onboarded
-  // instance counts as success — otherwise the user just sees onboarding again.
   progressCb(95, "sandbox_verifying");
-  console.log("[sandbox] Verifying restored instance is onboarded…");
-  if (await isOnboarded(coreUrl)) {
-    console.log("[sandbox] Verified: instance is onboarded — restore complete");
+
+  // Wait for the WHOLE restore to finish, streaming live sub-status (which stage /
+  // which add-on is installing). Done-signal = owner written to disk AND the restored
+  // Core back up & onboarded. Core only restarts at the END of the job (after every
+  // add-on installs), so a generous 30-min budget covers a big multi-add-on backup
+  // pulling images over the slow/flaky inner ghcr path; it returns the instant the
+  // restored Core serves, so it never delays the fast case.
+  const result = await waitForRestoreComplete(coreUrl, manifest.restoreAddons.length, progressCb, 30 * 60 * 1000);
+  if (result === "onboarded") {
+    console.log("[sandbox] Verified: restore complete (owner restored, Core onboarded)");
     return;
   }
+  if (result === "timeout") {
+    throw new Error("Restore did not bring the user's account within timeout — restore failed");
+  }
 
-  console.warn("[sandbox] Still in onboarding after restore — finalizing from backup marker…");
+  // owner_no_onboard: the data is on disk but HA's onboarding-restore sometimes drops
+  // .storage/onboarding, so Core still shows the wizard — finalize from the backup's
+  // own marker (verified to contain a real owner) and re-check.
+  console.warn("[sandbox] Owner restored but still in onboarding — finalizing from backup marker…");
+  await waitForHttp(coreUrl, 5 * 60 * 1000);
   if (await finalizeOnboardingFromBackup(backupSlug, coreUrl)) {
     console.log("[sandbox] Verified: onboarding finalized from backup — restore complete");
     return;
