@@ -48,6 +48,21 @@ export async function getPartitionGeometry(partitionPath: string): Promise<{ off
  */
 async function setupLoop(partitionPath: string, devicePath: string): Promise<void> {
   await $`losetup -d ${LOOP_DEV}`.nothrow().quiet();
+
+  // Grow the data partition to fill the disk BEFORE creating the filesystem.
+  // Freshly-flashed HA OS images ship a small (~1.3GB) fixed hassos-data
+  // partition; HA OS only expands it on first boot. The inject stage runs
+  // before that, so without growing here a large backup (e.g. 6+ GB) overflows
+  // the tiny partition → ENOSPC. sfdisk ", +" extends the partition to the end
+  // of the disk and fixes the GPT secondary header (parted fails here).
+  const partNum = partitionPath.match(/(\d+)$/)?.[1];
+  if (partNum) {
+    await $`echo ', +' | sfdisk --force -N ${partNum} ${devicePath}`.nothrow().quiet();
+    await $`partprobe ${devicePath}`.nothrow().quiet();
+    await $`udevadm settle --timeout=5`.nothrow().quiet();
+    console.log(`[inject] Grew data partition ${partitionPath} to fill disk`);
+  }
+
   const { offset, sizelimit } = await getPartitionGeometry(partitionPath);
   console.log(`[inject] Setting up loop device: offset=${offset}, size=${sizelimit}`);
   await $`losetup -o ${offset} --sizelimit ${sizelimit} ${LOOP_DEV} ${devicePath}`;
@@ -157,6 +172,7 @@ export async function injectBackup(
     let lastSpeedBytes = 0;
     let speed = 0;
 
+    try {
     while (true) {
       if (signal?.aborted) {
         reader.cancel();
@@ -165,7 +181,10 @@ export async function injectBackup(
       }
       const { done, value } = await reader.read();
       if (done) break;
-      writer.write(value);
+      // Must await: backpressure + so a write error (e.g. ENOSPC) rejects here
+      // and fails the stage cleanly, instead of escaping as an unhandled
+      // rejection that floods the logs with [FATAL] once per buffered chunk.
+      await writer.write(value);
       copied += value.byteLength;
 
       // Calculate speed: interval-based after first 500ms, average-based before
@@ -187,6 +206,21 @@ export async function injectBackup(
       // File copy maps to 3–90%
       const copyPercent = 3 + Math.round((copied / totalBytes) * 87);
       progressCb(copyPercent, "Copying backup\u2026", speed, eta);
+    }
+    } catch (err: unknown) {
+      // Best-effort close so the sink doesn't reject again on its own.
+      // writer.end() returns number | Promise<number>; wrap so a sync return or a
+      // rejected promise both swallow cleanly (no .catch on the bare number).
+      try { await writer.end(); } catch { /* ignore */ }
+      const e = err as { code?: string };
+      if (e?.code === "ENOSPC") {
+        const gb = (totalBytes / 1024 ** 3).toFixed(1);
+        throw new Error(
+          `Ran out of space writing the ${gb} GB backup to the target disk. ` +
+            `The device is too small for this backup \u2014 use a larger USB device.`,
+        );
+      }
+      throw err;
     }
 
     if (!signal?.aborted) {

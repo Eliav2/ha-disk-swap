@@ -238,15 +238,15 @@ export function BackupSelect({ device, selectedBackup, skipFlash, sandboxEnabled
                 <Rocket className="text-muted-foreground h-4 w-4" />
                 <div>
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium">Boot new HA OS in parallel</span>
+                    <span className="text-sm font-medium">Restore into the new disk &amp; boot it live</span>
                     <Badge variant="outline" className="border-amber-400 text-amber-600 text-[10px] px-1.5 py-0">
                       Experimental
                     </Badge>
                   </div>
                   <p className="text-muted-foreground text-xs">
                     {sandboxEnabled
-                      ? "After cloning, your new HA OS boots inside the add-on so you can verify the backup restored correctly — before you swap the disk. The inner HA is fully isolated and cannot control your devices."
-                      : "After cloning, boot the new HA OS in parallel and verify your backup before swapping. Takes 5–15 min extra."}
+                      ? "Your full backup (Core, add-ons, folders, history) is restored into the new disk and the new HA OS boots live inside the add-on so you can confirm — so the disk comes up ready, no first-boot steps. The inner HA is fully isolated and cannot control your devices. Adds ~10–20 min."
+                      : "Off: the backup is only copied onto the disk — you'll have to restore it manually (Restore from backup) on first boot. Enable to restore it now and boot the disk ready."}
                   </p>
                 </div>
               </div>
