@@ -12,6 +12,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so --generate-notes can diff against the previous tag
+          # and list the PRs merged since it.
+          fetch-depth: 0
 
       - name: Read version from config.yaml
         id: version
@@ -36,16 +40,27 @@ jobs:
         id: changelog
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          # Extract everything between ## $VERSION and the next ## heading
-          NOTES=$(awk "/^## ${VERSION}$/,/^## /" disk-swap/CHANGELOG.md | sed '1d;$d' | sed '/^$/d')
-          # Write to file to preserve newlines
-          echo "$NOTES" > /tmp/release-notes.md
+          : > /tmp/release-notes.md
+          if [ -f disk-swap/CHANGELOG.md ]; then
+            # Everything between "## $VERSION" and the next "## " heading.
+            awk "/^## ${VERSION}$/,/^## /" disk-swap/CHANGELOG.md \
+              | sed '1d;$d' | sed '/^$/d' > /tmp/release-notes.md || true
+          fi
 
       - name: Create GitHub release
         if: steps.check.outputs.exists == 'false'
         run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --title "Disk Swap ${{ steps.version.outputs.version }}" \
-            --notes-file /tmp/release-notes.md
+          # --target pins the tag to the exact merge commit that was pushed to main
+          # (without it the tag can land on the wrong commit). --generate-notes adds
+          # GitHub's "What's Changed" section listing the PRs merged since the last
+          # tag; the curated CHANGELOG section (if any) is used as the body above it.
+          ARGS=( "${{ steps.version.outputs.tag }}"
+            --target "${{ github.sha }}"
+            --title "Disk Swap ${{ steps.version.outputs.version }}"
+            --generate-notes )
+          if [ -s /tmp/release-notes.md ]; then
+            ARGS+=( --notes-file /tmp/release-notes.md )
+          fi
+          gh release create "${ARGS[@]}"
         env:
           GH_TOKEN: ${{ github.token }}
